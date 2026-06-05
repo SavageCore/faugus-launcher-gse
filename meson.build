@@ -33,6 +33,17 @@ install_data(
   install_dir: get_option('datadir') / 'licenses' / meson.project_name(),
 )
 
+gse_fork_files = run_command('find', 'gse_fork/linux', '-type', 'f', check: false).stdout().strip().split('\n')
+foreach f : gse_fork_files
+  if f != '' and not f.endswith('.gitkeep')
+    install_data(
+      f,
+      install_dir: get_option('datadir') / 'faugus-launcher' / 'gse_fork',
+      rename: f.split('/')[-1],
+    )
+  endif
+endforeach
+
 gnome.post_install(
   gtk_update_icon_cache: true,
 )

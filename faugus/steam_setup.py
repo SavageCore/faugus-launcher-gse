@@ -1,9 +1,13 @@
 import os
+import shutil
+import struct
 import subprocess
+import threading
 
+import vdf
 from pathlib import Path
 from faugus.path_manager import PathManager, IS_FLATPAK
-from gi.repository import GdkPixbuf
+from gi.repository import GdkPixbuf, GLib
 
 def _check_command(cmd):
     try:
@@ -131,3 +135,109 @@ def get_steam_icon_path(appid):
 
     images.sort(key=lambda x: x[0])
     return str(images[0][1])
+
+def _get_clienticon_from_appinfo(appid):
+    if not steam_folder:
+        return None
+    appinfo_path = steam_folder / "appcache/appinfo.vdf"
+    if not appinfo_path.exists():
+        return None
+    try:
+        with open(appinfo_path, "rb") as f:
+            magic = struct.unpack("<I", f.read(4))[0]
+            f.read(4)  # universe
+            if magic not in (0x07564428, 0x07564429):
+                return None
+            # v29 has an extra 20-byte sha1 field in each entry header
+            skip = 60 if magic == 0x07564429 else 40
+            while True:
+                hdr = f.read(8)
+                if len(hdr) < 8:
+                    break
+                cur_appid, size = struct.unpack("<II", hdr)
+                if cur_appid == 0:
+                    break
+                entry = f.read(size)
+                if cur_appid == int(appid):
+                    parsed = vdf.binary_loads(entry[skip:])
+                    return parsed.get("common", {}).get("clienticon")
+    except Exception:
+        return None
+
+
+def fetch_steam_cdn_icon(appid_or_name, dest, callback=None):
+    def _fetch():
+        try:
+            import requests
+            identifier = str(appid_or_name).strip()
+            print(f"[icon] fetch_steam_cdn_icon: starting for {identifier!r} → {dest}", flush=True)
+
+            if not identifier.isdigit():
+                print(f"[icon] name-based lookup for {identifier!r}", flush=True)
+                r = requests.get(
+                    "https://store.steampowered.com/api/storesearch/",
+                    params={"term": identifier, "l": "english", "cc": "US"},
+                    timeout=10,
+                )
+                items = [i for i in r.json().get("items", []) if i.get("type") == "app"]
+                if not items:
+                    print(f"[icon] no Steam results for {identifier!r}", flush=True)
+                    return
+                identifier = str(items[0]["id"])
+                print(f"[icon] resolved to appid {identifier}", flush=True)
+
+            # Priority 1: client icon hash from local appinfo.vdf
+            icon_hash = _get_clienticon_from_appinfo(identifier)
+            if icon_hash:
+                print(f"[icon] got clienticon hash from appinfo.vdf: {icon_hash}", flush=True)
+                icon_url = (
+                    f"https://cdn.cloudflare.steamstatic.com/steamcommunity/public"
+                    f"/images/apps/{identifier}/{icon_hash}.ico"
+                )
+                print(f"[icon] downloading {icon_url}", flush=True)
+                resp = requests.get(icon_url, timeout=10)
+                resp.raise_for_status()
+                icon_data = resp.content
+                if icon_data[:4] != b'\x00\x00\x01\x00':
+                    print(f"[icon] CDN returned non-ICO data ({icon_data[:4]!r}), skipping", flush=True)
+                    return
+                with open(dest, "wb") as f:
+                    f.write(icon_data)
+                print(f"[icon] saved {len(icon_data)} bytes to {dest}", flush=True)
+            else:
+                # Priority 2: crop library_600x900.jpg from CDN into a square
+                print(f"[icon] no appinfo.vdf entry, falling back to library_600x900.jpg crop", flush=True)
+                magick = shutil.which("magick") or shutil.which("convert")
+                if not magick:
+                    print(f"[icon] ImageMagick not found, cannot crop cover art", flush=True)
+                    return
+                cover_url = f"https://cdn.cloudflare.steamstatic.com/steam/apps/{identifier}/library_600x900.jpg"
+                print(f"[icon] downloading {cover_url}", flush=True)
+                resp = requests.get(cover_url, timeout=10)
+                resp.raise_for_status()
+                cover_data = resp.content
+                if cover_data[:2] != b'\xff\xd8':
+                    print(f"[icon] CDN returned non-JPEG data ({cover_data[:4]!r}), skipping", flush=True)
+                    return
+                tmp = dest + ".cover_tmp.jpg"
+                with open(tmp, "wb") as f:
+                    f.write(cover_data)
+                result = subprocess.run(
+                    [magick, tmp,
+                     "-gravity", "Center", "-crop", "600x600+0+0", "+repage",
+                     "-resize", "256x256!", f"png:{dest}"],
+                    capture_output=True,
+                )
+                os.remove(tmp)
+                if result.returncode == 0:
+                    print(f"[icon] cropped cover art saved to {dest}", flush=True)
+                else:
+                    print(f"[icon] ImageMagick crop failed: {result.stderr.decode()}", flush=True)
+                    return
+
+            if callback:
+                GLib.idle_add(callback)
+        except Exception as e:
+            print(f"[icon] fetch_steam_cdn_icon error: {e}", flush=True)
+
+    threading.Thread(target=_fetch, daemon=True).start()

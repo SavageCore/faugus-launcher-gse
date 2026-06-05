@@ -4,6 +4,7 @@ py.install_sources(
   'config_manager.py',
   'ea_fix.py',
   'gamepad.py',
+  'gse.py',
   'keyboard.py',
   'language_config.py',
   'launcher.py',

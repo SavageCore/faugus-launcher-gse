@@ -17,6 +17,7 @@ from faugus.config_manager import *
 from faugus.utils import *
 from faugus.steam_setup import *
 from faugus.ea_fix import *
+import faugus.gse as gse
 
 VERSION = "1.22.8"
 
@@ -104,6 +105,8 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
         self.mono_icon = False
 
         self.current_prefix = None
+        self.current_save_path = None
+        self.current_achievements_path = None
         self.games = []
 
         self.last_click_time = 0
@@ -222,9 +225,28 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
         self.menu_game_location.connect("activate", self.on_context_menu_game_location)
         self.context_menu.append(self.menu_game_location)
 
+        self.menu_export = Gtk.MenuItem(label=_("Export"))
+        self.submenu_export = Gtk.Menu()
+        self.menu_export_gse = Gtk.MenuItem(label="GSE Fork")
+        self.menu_export_gse.connect("activate", self.on_context_menu_export, "gse_fork")
+        self.submenu_export.append(self.menu_export_gse)
+        self.menu_export_gbe = Gtk.MenuItem(label="GBE Fork")
+        self.menu_export_gbe.connect("activate", self.on_context_menu_export, "gbe_fork")
+        self.submenu_export.append(self.menu_export_gbe)
+        self.menu_export.set_submenu(self.submenu_export)
+        self.context_menu.append(self.menu_export)
+
         self.menu_prefix_location = Gtk.MenuItem(label=_("Open prefix location"))
         self.menu_prefix_location.connect("activate", self.on_context_menu_prefix_location)
         self.context_menu.append(self.menu_prefix_location)
+
+        self.menu_save_path = Gtk.MenuItem(label=_("Open save directory"))
+        self.menu_save_path.connect("activate", self.on_context_menu_open_save_dir)
+        self.context_menu.append(self.menu_save_path)
+
+        self.menu_achievements = Gtk.MenuItem(label=_("Open achievements directory"))
+        self.menu_achievements.connect("activate", self.on_context_menu_open_achievements)
+        self.context_menu.append(self.menu_achievements)
 
         self.menu_run = Gtk.MenuItem(label=_("Run file inside the prefix"))
         self.menu_run.connect("activate", self.on_context_menu_run)
@@ -258,6 +280,10 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
             gamepad.init_gamepad(self)
 
         GLib.timeout_add(1000, self.check_running)
+
+        threading.Thread(target=gse.update_gse, daemon=True).start()
+        threading.Thread(target=lambda: gse.update_gse("gbe_fork"), daemon=True).start()
+        threading.Thread(target=gse.update_tools, daemon=True).start()
 
     def update_icon(self):
         game = self.selected()
@@ -1376,17 +1402,25 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
                     self.menu_prefix_location.set_visible(False)
                     self.menu_run.set_visible(False)
                     self.menu_show_logs.set_visible(False)
+                    self.menu_export.set_visible(False)
+                    self.menu_achievements.set_visible(False)
                 elif game.runner == "Linux-Native":
                     self.menu_duplicate.set_visible(True)
                     self.menu_game_location.set_visible(True)
                     self.menu_prefix_location.set_visible(False)
                     self.menu_run.set_visible(False)
                     self.menu_show_logs.set_visible(False)
+                    self.menu_export.set_visible(False)
+                    self.menu_achievements.set_visible(False)
                 else:
                     self.menu_duplicate.set_visible(True)
                     self.menu_game_location.set_visible(True)
                     self.menu_prefix_location.set_visible(True)
                     self.menu_run.set_visible(True)
+                    self.menu_export.set_visible(True)
+                    self.menu_export_gse.set_sensitive((gse._GSE_BINARY_DIR / "regular").is_dir())
+                    self.menu_export_gbe.set_sensitive((gse._GBE_BINARY_DIR / "regular").is_dir())
+                    self.menu_achievements.set_visible(bool(game.gse_enabled))
 
                 if os.path.dirname(game.path):
                     self.menu_game_location.set_sensitive(True)
@@ -1401,6 +1435,33 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
                 else:
                     self.menu_prefix_location.set_sensitive(False)
                     self.current_prefix = None
+
+                if game.save_path:
+                    self.menu_save_path.set_visible(True)
+                    self.menu_save_path.set_sensitive(os.path.isdir(game.save_path))
+                    self.current_save_path = game.save_path
+                else:
+                    self.menu_save_path.set_visible(False)
+                    self.current_save_path = None
+
+                gse_cfg = gse.read_config(game.gameid)
+                _appid = gse_cfg.get("appid", "").strip()
+
+                if self.menu_achievements.get_visible() and game.prefix:
+                    achievements_base = os.path.join(
+                        game.prefix, "drive_c", "users", "steamuser",
+                        "AppData", "Roaming", "GSE Saves",
+                    )
+                    achievements_path = (
+                        os.path.join(achievements_base, _appid)
+                        if _appid and os.path.isdir(os.path.join(achievements_base, _appid))
+                        else achievements_base
+                    )
+                    self.menu_achievements.set_sensitive(os.path.isdir(achievements_path))
+                    self.current_achievements_path = achievements_path
+                else:
+                    self.menu_achievements.set_sensitive(False)
+                    self.current_achievements_path = None
 
                 if event:
                     self.context_menu.popup_at_pointer(event)
@@ -1537,6 +1598,87 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
 
     def on_context_menu_prefix_location(self, menu_item):
         subprocess.run(["xdg-open", self.current_prefix], check=True)
+
+    def on_context_menu_open_save_dir(self, menu_item):
+        subprocess.run(["xdg-open", self.current_save_path], check=True)
+
+    def on_context_menu_open_achievements(self, menu_item):
+        subprocess.run(["xdg-open", self.current_achievements_path], check=True)
+
+    def on_context_menu_export(self, widget, fork):
+        game = self.selected()
+        if not game:
+            return
+
+        filechooser = Gtk.FileChooserNative(
+            title=_("Choose export destination"),
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+            accept_label=_("Export here"),
+            cancel_label=_("Cancel"),
+        )
+        response = filechooser.run()
+        if response != Gtk.ResponseType.ACCEPT:
+            return
+
+        destination = Path(filechooser.get_filename())
+        export_dir = destination / Path(os.path.dirname(game.path)).name
+
+        if export_dir.exists():
+            confirm = Gtk.MessageDialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.YES_NO,
+                text=_("Export already exists"),
+                secondary_text=_("{} already exists. Delete it and re-export?").format(export_dir),
+            )
+            resp = confirm.run()
+            confirm.destroy()
+            if resp != Gtk.ResponseType.YES:
+                return
+            shutil.rmtree(str(export_dir))
+
+        fork_label = "GSE" if fork == "gse_fork" else "GBE"
+
+        progress_dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.NONE,
+            text=_("Exporting…"),
+            secondary_text=_("Copying game files, please wait."),
+        )
+        progress_dialog.show()
+
+        def do_export():
+            ok, msg = gse.export_game(game.path, game.gameid, fork, destination)
+            GLib.idle_add(finish, ok, msg)
+
+        def finish(ok, msg):
+            progress_dialog.destroy()
+            if ok:
+                result_dialog = Gtk.MessageDialog(
+                    transient_for=self,
+                    modal=True,
+                    message_type=Gtk.MessageType.INFO,
+                    buttons=Gtk.ButtonsType.OK,
+                    text=_("{} export complete").format(fork_label),
+                    secondary_text=msg,
+                )
+            else:
+                result_dialog = Gtk.MessageDialog(
+                    transient_for=self,
+                    modal=True,
+                    message_type=Gtk.MessageType.ERROR,
+                    buttons=Gtk.ButtonsType.OK,
+                    text=_("Export failed"),
+                    secondary_text=msg,
+                )
+            result_dialog.run()
+            result_dialog.destroy()
+            return False
+
+        threading.Thread(target=do_export, daemon=True).start()
 
     def on_context_menu_run(self, menu_item):
         game = self.selected()

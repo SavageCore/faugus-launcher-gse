@@ -42,6 +42,9 @@ class ConfigManager:
             'banner-size': '100',
             'sort': 'alpha',
             'category': 'all',
+            'steam-api-key': '',
+            'default-gse-username': '',
+            'sgdb-api-key': '',
         }
 
         self.config = {}
@@ -72,7 +75,7 @@ class ConfigManager:
 
         with open(config_file_dir, 'w') as f:
             for key, value in self.config.items():
-                if key in ['default-prefix', 'default-runner']:
+                if key in ['default-prefix', 'default-runner', 'steam-api-key', 'default-gse-username', 'sgdb-api-key']:
                     f.write(f'{key}="{value}"\n')
                 else:
                     f.write(f'{key}={value}\n')

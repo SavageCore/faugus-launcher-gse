@@ -126,6 +126,9 @@ def check_for_updates():
 def main():
     update_umu()
     check_for_updates()
+    from faugus.gse import update_gse, update_tools
+    update_gse()
+    update_tools()
 
 if __name__ == "__main__":
     main()

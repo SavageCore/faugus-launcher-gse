@@ -701,6 +701,13 @@ class FaugusRun(HiDpiMixin):
 
     def on_process_exit(self, pid, condition):
         import psutil
+        if os.WIFEXITED(condition):
+            print(f"[runner] process {pid} exited with code {os.WEXITSTATUS(condition)}")
+        elif os.WIFSIGNALED(condition):
+            print(f"[runner] process {pid} killed by signal {os.WTERMSIG(condition)}")
+        else:
+            print(f"[runner] process {pid} wait status {condition:#010x}")
+
         def kill_child_proc():
 
             if self.process and self.process.poll() is None:
@@ -743,6 +750,16 @@ class FaugusRun(HiDpiMixin):
 
                         os.rename(old_path, new_path)
                         break
+
+        gse_gameid = os.environ.get("FAUGUS_GSE_GAME")
+        if gse_gameid:
+            try:
+                from faugus.gse import restore_goldberg
+                game_data = load_game_from_json(gse_gameid)
+                if game_data:
+                    restore_goldberg(game_data)
+            except Exception as e:
+                print(f"[gse] restore failed: {e}")
 
         GLib.idle_add(self.close_splash_window)
         GLib.idle_add(self.close_log_window)
@@ -885,6 +902,14 @@ def main():
         game = load_game_from_json(args.game)
         if not game:
             return
+
+        if game.get("gse_enabled"):
+            try:
+                from faugus.gse import prepare_goldberg
+                prepare_goldberg(game)
+                os.environ["FAUGUS_GSE_GAME"] = game["gameid"]
+            except Exception as e:
+                print(f"[gse] prepare failed: {e}")
 
         launch_options = build_launch_command(game)
         FaugusRun(launch_options, None).run()
