@@ -1680,6 +1680,81 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
 
         threading.Thread(target=do_export, daemon=True).start()
 
+    def on_context_menu_open_sgdb(self, menu_item):
+        game = self.selected()
+        if not game:
+            return
+
+        filechooser = Gtk.FileChooserNative(
+            title=_("Choose export destination"),
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+            accept_label=_("Export here"),
+            cancel_label=_("Cancel"),
+        )
+        response = filechooser.run()
+        if response != Gtk.ResponseType.ACCEPT:
+            return
+
+        destination = Path(filechooser.get_filename())
+        export_dir = destination / Path(os.path.dirname(game.path)).name
+
+        if export_dir.exists():
+            confirm = Gtk.MessageDialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.YES_NO,
+                text=_("Export already exists"),
+                secondary_text=_("{} already exists. Delete it and re-export?").format(export_dir),
+            )
+            resp = confirm.run()
+            confirm.destroy()
+            if resp != Gtk.ResponseType.YES:
+                return
+            shutil.rmtree(str(export_dir))
+
+        fork_label = "GSE" if fork == "gse_fork" else "GBE"
+
+        progress_dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.NONE,
+            text=_("Exporting…"),
+            secondary_text=_("Copying game files, please wait."),
+        )
+        progress_dialog.show()
+
+        def do_export():
+            ok, msg = gse.export_game(game.path, game.gameid, fork, destination)
+            GLib.idle_add(finish, ok, msg)
+
+        def finish(ok, msg):
+            progress_dialog.destroy()
+            if ok:
+                result_dialog = Gtk.MessageDialog(
+                    transient_for=self,
+                    modal=True,
+                    message_type=Gtk.MessageType.INFO,
+                    buttons=Gtk.ButtonsType.OK,
+                    text=_("{} export complete").format(fork_label),
+                    secondary_text=msg,
+                )
+            else:
+                result_dialog = Gtk.MessageDialog(
+                    transient_for=self,
+                    modal=True,
+                    message_type=Gtk.MessageType.ERROR,
+                    buttons=Gtk.ButtonsType.OK,
+                    text=_("Export failed"),
+                    secondary_text=msg,
+                )
+            result_dialog.run()
+            result_dialog.destroy()
+            return False
+
+        threading.Thread(target=do_export, daemon=True).start()
+
     def on_context_menu_run(self, menu_item):
         game = self.selected()
         if not game:

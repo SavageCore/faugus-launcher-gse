@@ -1073,3 +1073,99 @@ def restore_goldberg(game: dict) -> None:
         shutil.rmtree(str(settings_dst))
 
     _log("restore: done")
+
+
+def export_game(game_path: str, gameid: str, fork: str, destination: Path) -> "tuple[bool, str]":
+    _log(f"export: gameid={gameid!r} path={game_path!r} fork={fork!r} dest={destination}")
+
+    if not game_path:
+        return False, "no game path configured"
+
+    game_dir = Path(os.path.dirname(game_path))
+    if not game_dir.is_dir():
+        return False, f"game directory not found: {game_dir}"
+
+    export_dir = destination / game_dir.name
+    if export_dir.exists():
+        return False, "exists"
+
+    _log(f"export: copying {game_dir} -> {export_dir}")
+    try:
+        shutil.copytree(str(game_dir), str(export_dir))
+    except Exception as e:
+        return False, f"copy failed: {e}"
+
+    cfg = read_config(gameid)
+    variant = cfg.get("fork_variant", "regular")
+    binary_dir = _fork_binary_dir(fork)
+    _log(f"export: fork={fork!r} variant={variant!r} binary_dir={binary_dir}")
+
+    dll_dir = export_dir
+    dll_for_interfaces: "Path | None" = None
+    dlls_to_inject: "list[tuple[Path, Path]]" = []
+
+    for dll_name in _DLL_NAMES:
+        game_dll = _find_dll(export_dir, dll_name)
+        if game_dll is None:
+            _log(f"export: {dll_name} not found under {export_dir}, skipping")
+            continue
+        dll_dir = game_dll.parent
+
+        src_dll = binary_dir / variant / dll_name
+        if not src_dll.exists():
+            src_dll = binary_dir / dll_name
+        if not src_dll.exists():
+            _log(f"export: Goldberg {dll_name} not in binary dir {binary_dir}, skipping")
+            continue
+
+        if dll_for_interfaces is None:
+            dll_for_interfaces = game_dll
+        dlls_to_inject.append((src_dll, game_dll))
+
+    settings_dst = dll_dir / "steam_settings"
+    settings_src = get_steam_settings_dir(gameid)
+    has_settings = settings_src.exists()
+
+    if has_settings:
+        _log(f"export: copying steam_settings {settings_src} -> {settings_dst}")
+        if settings_dst.exists():
+            shutil.rmtree(str(settings_dst))
+        shutil.copytree(str(settings_src), str(settings_dst))
+
+    if dll_for_interfaces is not None and dll_for_interfaces.exists():
+        gi_x64 = binary_dir / "generate_interfaces_x64"
+        gi_x32 = binary_dir / "generate_interfaces_x32"
+        tool = gi_x64 if gi_x64.exists() else gi_x32 if gi_x32.exists() else None
+        if tool:
+            settings_dst.mkdir(exist_ok=True)
+            try:
+                result = subprocess.run(
+                    [str(tool), str(dll_for_interfaces)],
+                    cwd=str(settings_dst),
+                    timeout=30,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.stdout.strip():
+                    _log(f"export: generate_interfaces stdout: {result.stdout.strip()}")
+                if result.stderr.strip():
+                    _log(f"export: generate_interfaces stderr: {result.stderr.strip()}")
+                if (settings_dst / "steam_interfaces.txt").exists():
+                    _log("export: generate_interfaces wrote steam_interfaces.txt")
+                else:
+                    _log("export: generate_interfaces ran but produced no output")
+            except Exception as e:
+                _log(f"export: generate_interfaces failed: {e}")
+        else:
+            _log("export: generate_interfaces tool not found")
+
+    for src_dll, game_dll in dlls_to_inject:
+        _log(f"export: injecting {src_dll} -> {game_dll}")
+        shutil.copy2(str(src_dll), str(game_dll))
+
+    _log("export: done")
+    msg = str(export_dir)
+    if not has_settings:
+        msg += "\n\nNote: no GSE settings were found for this game. Open Goldberg Settings and save first for a fully configured export."
+    return True, msg
