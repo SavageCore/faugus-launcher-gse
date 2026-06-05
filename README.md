@@ -85,6 +85,11 @@ sudo ninja install
 ```
 meson ninja pygobject requests pillow vdf psutil pygame imagemagick icoextract libayatana-appindicator libcanberra vulkan-tools
 ```
+### Running without installing
+From the project root:
+```
+python3 -m faugus.launcher
+```
 
 # Usage
 [![YouTube](http://i.ytimg.com/vi/Ay6C2f55Pc8/hqdefault.jpg)](https://www.youtube.com/watch?v=Ay6C2f55Pc8)
