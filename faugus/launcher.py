@@ -1463,6 +1463,22 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
                     self.menu_achievements.set_sensitive(False)
                     self.current_achievements_path = None
 
+                if self.menu_achievements.get_visible() and game.prefix:
+                    achievements_base = os.path.join(
+                        game.prefix, "drive_c", "users", "steamuser",
+                        "AppData", "Roaming", "GSE Saves",
+                    )
+                    achievements_path = (
+                        os.path.join(achievements_base, _appid)
+                        if _appid and os.path.isdir(os.path.join(achievements_base, _appid))
+                        else achievements_base
+                    )
+                    self.menu_achievements.set_sensitive(os.path.isdir(achievements_path))
+                    self.current_achievements_path = achievements_path
+                else:
+                    self.menu_achievements.set_sensitive(False)
+                    self.current_achievements_path = None
+
                 if event:
                     self.context_menu.popup_at_pointer(event)
                 else:
@@ -2660,7 +2676,8 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
             edit_game_dialog.entry_title.set_text(game.title)
             edit_game_dialog.entry_path.set_text(game.path)
             edit_game_dialog.entry_prefix.set_text(game.prefix)
-            edit_game_dialog.launch_arguments = game.launch_arguments
+            edit_game_dialog.entry_save_path.set_text(game.save_path)
+            edit_game_dialog.entry_launch_arguments.set_text(game.launch_arguments)
             edit_game_dialog.entry_game_arguments.set_text(game.game_arguments)
             edit_game_dialog.set_title(_("Edit %s") % game.title)
             edit_game_dialog.entry_protonfix.set_text(game.protonfix)
@@ -2927,6 +2944,8 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
             launcher_id = add_game_dialog.combobox_launcher.get_active_id()
 
             prefix = os.path.normpath(add_game_dialog.entry_prefix.get_text())
+            save_path_text = add_game_dialog.entry_save_path.get_text().strip()
+            save_path = os.path.normpath(save_path_text) if save_path_text else ""
             if launcher_id in ("windows", "linux", "steam"):
                 title = add_game_dialog.entry_title.get_text()
             else:
@@ -2944,6 +2963,7 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
 
             path = add_game_dialog.entry_path.get_text()
             launch_arguments = add_game_dialog.launch_arguments
+            save_path = add_game_dialog.entry_save_path.get_text()
             game_arguments = add_game_dialog.entry_game_arguments.get_text()
             protonfix = add_game_dialog.entry_protonfix.get_text()
             runner = add_game_dialog.combobox_runner.get_active_text()
@@ -3004,12 +3024,14 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
                 disable_hidraw = ""
                 addapp_checkbox = ""
                 prevent_sleep = ""
+                gse_enabled = False
             else:
                 mangohud = True if add_game_dialog.checkbox_mangohud.get_active() else ""
                 gamemode = True if add_game_dialog.checkbox_gamemode.get_active() else ""
                 disable_hidraw = True if add_game_dialog.checkbox_disable_hidraw.get_active() else ""
                 addapp_checkbox = "addapp_enabled" if add_game_dialog.addapp_enabled else ""
                 prevent_sleep = True if add_game_dialog.checkbox_prevent_sleep.get_active() else ""
+                gse_enabled = add_game_dialog.checkbox_goldberg.get_active()
 
             game = Game(
                 title_formatted,
@@ -3040,6 +3062,8 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
                 prevent_sleep,
                 category,
                 icon,
+                gse_enabled,
+                save_path,
             )
 
             desktop_shortcut_state = add_game_dialog.checkbox_shortcut_desktop.get_active()
@@ -3305,7 +3329,9 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
             game.title = edit_game_dialog.entry_title.get_text()
             game.path = edit_game_dialog.entry_path.get_text()
             game.prefix = os.path.normpath(edit_game_dialog.entry_prefix.get_text())
-            game.launch_arguments = edit_game_dialog.launch_arguments
+            save_path_text = edit_game_dialog.entry_save_path.get_text().strip()
+            game.save_path = os.path.normpath(save_path_text) if save_path_text else ""
+            game.launch_arguments = edit_game_dialog.entry_launch_arguments.get_text()
             game.game_arguments = edit_game_dialog.entry_game_arguments.get_text()
             game.mangohud = edit_game_dialog.checkbox_mangohud.get_active()
             game.gamemode = edit_game_dialog.checkbox_gamemode.get_active()
@@ -4784,6 +4810,8 @@ class Game:
         prevent_sleep,
         category,
         icon,
+        gse_enabled=False,
+        save_path="",
     ):
         self.gameid = gameid
         self.title = title
@@ -4813,6 +4841,8 @@ class Game:
         self.prevent_sleep = prevent_sleep
         self.category = category
         self.icon = icon
+        self.gse_enabled = gse_enabled
+        self.save_path = save_path
 
 class DuplicateDialog(Gtk.Dialog):
     def __init__(self, parent, title):
@@ -4932,6 +4962,436 @@ class DeleteDialog(Gtk.Dialog):
 
         self.show_all()
 
+    def get_remove_prefix_state(self):
+        # Get the state of the checkbox
+        return self.checkbox.get_active()
+
+
+class GoldbergDialog(Gtk.Dialog):
+    def __init__(self, parent, gameid, game_title="", prefix=""):
+        super().__init__(title=_("Goldberg Emulator Settings"), parent=parent, flags=0)
+        self.set_modal(True)
+        self.set_resizable(True)
+        self.set_default_size(460, -1)
+        self.gameid = gameid
+        self.game_title = game_title
+        self.prefix = prefix
+
+        notebook = Gtk.Notebook()
+        notebook.set_margin_start(10)
+        notebook.set_margin_end(10)
+        notebook.set_margin_top(10)
+
+        # --- Tab 1: Basic ---
+        grid_basic = Gtk.Grid()
+        grid_basic.set_row_spacing(8)
+        grid_basic.set_column_spacing(10)
+        grid_basic.set_margin_top(10)
+        grid_basic.set_margin_bottom(10)
+        grid_basic.set_margin_start(10)
+        grid_basic.set_margin_end(10)
+
+        def make_label(text):
+            lbl = Gtk.Label(label=text)
+            lbl.set_halign(Gtk.Align.START)
+            return lbl
+
+        grid_basic.attach(make_label(_("Steam AppID")), 0, 0, 1, 1)
+        appid_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.entry_appid = Gtk.Entry()
+        self.entry_appid.set_hexpand(True)
+        self.entry_appid.set_tooltip_text(_("The numeric Steam AppID for this game."))
+        self.button_search_appid = Gtk.Button(label=_("Search"))
+        self.button_search_appid.set_tooltip_text(
+            _("Search Steam for this game's AppID")
+        )
+        self.button_search_appid.connect("clicked", self._on_search_appid)
+        appid_box.pack_start(self.entry_appid, True, True, 0)
+        appid_box.pack_start(self.button_search_appid, False, False, 0)
+        grid_basic.attach(appid_box, 1, 0, 1, 1)
+
+        grid_basic.attach(make_label(_("Username")), 0, 1, 1, 1)
+        self.entry_username = Gtk.Entry()
+        self.entry_username.set_hexpand(True)
+        grid_basic.attach(self.entry_username, 1, 1, 1, 1)
+
+        grid_basic.attach(make_label(_("Persona Name")), 0, 2, 1, 1)
+        self.entry_persona = Gtk.Entry()
+        self.entry_persona.set_hexpand(True)
+        grid_basic.attach(self.entry_persona, 1, 2, 1, 1)
+
+        grid_basic.attach(make_label(_("Language")), 0, 3, 1, 1)
+        self.combo_language = Gtk.ComboBoxText()
+        for lang_code in gse.LANGUAGES:
+            self.combo_language.append_text(lang_code)
+        self.combo_language.set_hexpand(True)
+        grid_basic.attach(self.combo_language, 1, 3, 1, 1)
+
+        grid_basic.attach(make_label(_("Custom SteamID")), 0, 4, 1, 1)
+        self.entry_steamid = Gtk.Entry()
+        self.entry_steamid.set_hexpand(True)
+        self.entry_steamid.set_placeholder_text(_("leave blank for random"))
+        grid_basic.attach(self.entry_steamid, 1, 4, 1, 1)
+
+        grid_basic.attach(make_label(_("DLL Path")), 0, 5, 1, 1)
+        dll_path_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.entry_dll_path = Gtk.Entry()
+        self.entry_dll_path.set_hexpand(True)
+        self.entry_dll_path.set_placeholder_text(_("leave blank for auto-detect"))
+        self.entry_dll_path.set_tooltip_text(
+            _("Path to steam_api64.dll / steam_api.dll. Leave blank to auto-detect.")
+        )
+        self.button_browse_dll = Gtk.Button(label=_("Browse…"))
+        self.button_browse_dll.set_tooltip_text(_("Browse to the Steam API DLL"))
+        self.button_browse_dll.connect("clicked", self._on_browse_dll)
+        dll_path_box.pack_start(self.entry_dll_path, True, True, 0)
+        dll_path_box.pack_start(self.button_browse_dll, False, False, 0)
+        grid_basic.attach(dll_path_box, 1, 5, 1, 1)
+
+        grid_basic.attach(make_label(_("Fork")), 0, 6, 1, 1)
+        self.combo_fork = Gtk.ComboBoxText()
+        self.combo_fork.append_text("gse_fork")
+        self.combo_fork.append_text("gbe_fork")
+        self.combo_fork.set_hexpand(True)
+        self.combo_fork.set_tooltip_text(
+            _("Which Goldberg Emulator fork to use.\n\n"
+              "gse_fork (alex47exe): improved fork of gbe_fork.\n"
+              "gbe_fork (Detanup01): the original fork.")
+        )
+        grid_basic.attach(self.combo_fork, 1, 6, 1, 1)
+
+        grid_basic.attach(make_label(_("Variant")), 0, 7, 1, 1)
+        self.combo_variant = Gtk.ComboBoxText()
+        self.combo_variant.append_text("regular")
+        self.combo_variant.append_text("experimental")
+        self.combo_variant.set_hexpand(True)
+        self.combo_variant.set_tooltip_text(
+            _("Which build of the emulator to deploy.\n\n"
+              "regular: stable build, recommended for most games.\n"
+              "experimental: bleeding-edge build with untested features; may improve overlay support.")
+        )
+        grid_basic.attach(self.combo_variant, 1, 7, 1, 1)
+
+        self.check_offline = Gtk.CheckButton(label=_("Offline Mode"))
+        self.check_offline.set_tooltip_text(_("Disable all Steam network activity."))
+        grid_basic.attach(self.check_offline, 0, 8, 2, 1)
+
+        self.check_no_net = Gtk.CheckButton(label=_("Disable Networking"))
+        self.check_no_net.set_tooltip_text(_("Disable LAN / matchmaking networking."))
+        grid_basic.attach(self.check_no_net, 0, 9, 2, 1)
+
+        self.check_fetch_ach = Gtk.CheckButton(label=_("Fetch achievements from Steam"))
+        self.check_fetch_ach.set_tooltip_text(
+            _("Automatically download achievements and stats from Steam when saving.")
+        )
+        grid_basic.attach(self.check_fetch_ach, 0, 10, 2, 1)
+
+        notebook.append_page(grid_basic, Gtk.Label(label=_("Basic")))
+
+        # --- Tab 2: Advanced / Overlay ---
+        grid_adv = Gtk.Grid()
+        grid_adv.set_row_spacing(8)
+        grid_adv.set_column_spacing(10)
+        grid_adv.set_margin_top(10)
+        grid_adv.set_margin_bottom(10)
+        grid_adv.set_margin_start(10)
+        grid_adv.set_margin_end(10)
+
+        self.check_unlock_dlc = Gtk.CheckButton(label=_("Unlock All DLC"))
+        self.check_unlock_dlc.set_tooltip_text(
+            _("Make all DLC appear as owned, even if not purchased.")
+        )
+        grid_adv.attach(self.check_unlock_dlc, 0, 0, 1, 1)
+
+        self.check_unknown_stats = Gtk.CheckButton(label=_("Allow Unknown Stats"))
+        self.check_unknown_stats.set_tooltip_text(
+            _("Allow stats that aren't defined in the game's schema to be set and retrieved.")
+        )
+        grid_adv.attach(self.check_unknown_stats, 0, 1, 1, 1)
+
+        self.check_unknown_ach = Gtk.CheckButton(label=_("Allow Unknown Achievements"))
+        self.check_unknown_ach.set_tooltip_text(
+            _("Allow achievements not defined in the game's schema to be unlocked.")
+        )
+        grid_adv.attach(self.check_unknown_ach, 0, 2, 1, 1)
+
+        self.check_leaderboards = Gtk.CheckButton(label=_("Auto-create Leaderboards"))
+        self.check_leaderboards.set_tooltip_text(
+            _("Automatically create leaderboards when a game requests one that doesn't exist yet.")
+        )
+        grid_adv.attach(self.check_leaderboards, 0, 3, 1, 1)
+
+        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        sep.set_margin_top(4)
+        sep.set_margin_bottom(4)
+        grid_adv.attach(sep, 0, 4, 1, 1)
+
+        self.check_overlay_exp = Gtk.CheckButton(label=_("Overlay (Experimental)"))
+        self.check_overlay_exp.set_tooltip_text(
+            _("Enable the experimental Steam overlay.")
+        )
+        self.check_overlay_exp.connect("toggled", self._on_overlay_exp_toggled)
+        grid_adv.attach(self.check_overlay_exp, 0, 5, 1, 1)
+
+        self.check_overlay_ach = Gtk.CheckButton(
+            label=_("Show Achievement Notifications")
+        )
+        self.check_overlay_ach.set_tooltip_text(
+            _("Show an overlay popup when an achievement is unlocked.")
+        )
+        grid_adv.attach(self.check_overlay_ach, 0, 6, 1, 1)
+
+        self.check_overlay_ach_progress = Gtk.CheckButton(
+            label=_("Show Achievement Progress Notifications")
+        )
+        self.check_overlay_ach_progress.set_tooltip_text(
+            _("Show an overlay popup for achievement progress updates (e.g. 50/100 kills).")
+        )
+        grid_adv.attach(self.check_overlay_ach_progress, 0, 7, 1, 1)
+
+        self.check_overlay_friends = Gtk.CheckButton(
+            label=_("Show Friend Notifications")
+        )
+        self.check_overlay_friends.set_tooltip_text(
+            _("Show overlay notifications for friend invitations and messages.")
+        )
+        grid_adv.attach(self.check_overlay_friends, 0, 8, 1, 1)
+
+        notebook.append_page(grid_adv, Gtk.Label(label=_("Advanced")))
+
+        # Buttons
+        btn_cancel = Gtk.Button(label=_("Cancel"))
+        btn_cancel.set_size_request(150, -1)
+        btn_cancel.set_hexpand(True)
+        btn_cancel.connect("clicked", lambda b: self.response(Gtk.ResponseType.CANCEL))
+
+        self.btn_ok = Gtk.Button(label=_("Ok"))
+        self.btn_ok.set_size_request(150, -1)
+        self.btn_ok.set_hexpand(True)
+        self.btn_ok.connect("clicked", lambda b: self._save_and_respond())
+
+        bottom_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        bottom_box.set_margin_start(10)
+        bottom_box.set_margin_end(10)
+        bottom_box.set_margin_bottom(10)
+        bottom_box.pack_start(btn_cancel, True, True, 0)
+        bottom_box.pack_start(self.btn_ok, True, True, 0)
+
+        content_area = self.get_content_area()
+        content_area.pack_start(notebook, True, True, 0)
+        content_area.pack_start(bottom_box, False, False, 0)
+
+        self._load()
+        self.show_all()
+
+    def _on_search_appid(self, widget):
+        query = self.game_title.strip()
+        if not query:
+            return
+
+        self.button_search_appid.set_sensitive(False)
+        self.button_search_appid.set_label(_("Searching…"))
+
+        def do_search():
+            try:
+                import requests
+
+                url = "https://store.steampowered.com/api/storesearch/"
+                r = requests.get(
+                    url, params={"term": query, "l": "english", "cc": "US"}, timeout=10
+                )
+                if r.status_code != 200:
+                    GLib.idle_add(self._search_done, [])
+                    return
+                items = [
+                    (str(item["id"]), item["name"])
+                    for item in r.json().get("items", [])
+                    if item.get("type") == "app"
+                ]
+                GLib.idle_add(self._search_done, items)
+            except Exception:
+                GLib.idle_add(self._search_done, [])
+
+        threading.Thread(target=do_search, daemon=True).start()
+
+    def _search_done(self, results):
+        self.button_search_appid.set_label(_("Search"))
+        self.button_search_appid.set_sensitive(True)
+
+        if not results:
+            dialog = Gtk.MessageDialog(
+                parent=self,
+                modal=True,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text=_('No Steam results found for "%s".') % self.game_title,
+            )
+            dialog.run()
+            dialog.destroy()
+            return
+
+        if len(results) == 1:
+            self.entry_appid.set_text(results[0][0])
+            return
+
+        # Multiple results - show a picker
+        picker = Gtk.Dialog(
+            title=_("Select Game"), parent=self, modal=True
+        )
+        picker.set_default_size(380, 300)
+        picker.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
+        picker.add_button(_("Select"), Gtk.ResponseType.OK)
+
+        store = Gtk.ListStore(str, str)  # appid, name
+        for appid, name in results:
+            store.append([appid, name])
+
+        tree = Gtk.TreeView(model=store)
+        tree.set_headers_visible(False)
+        tree.append_column(Gtk.TreeViewColumn("Name", Gtk.CellRendererText(), text=1))
+        tree.get_selection().select_path(Gtk.TreePath.new_first())
+        tree.connect("row-activated", lambda *_: picker.response(Gtk.ResponseType.OK))
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.add(tree)
+        picker.get_content_area().pack_start(scroll, True, True, 0)
+        picker.show_all()
+
+        if picker.run() == Gtk.ResponseType.OK:
+            model, it = tree.get_selection().get_selected()
+            if it:
+                self.entry_appid.set_text(model[it][0])
+
+        picker.destroy()
+        return False
+
+    def _load(self):
+        cfg = gse.read_config(self.gameid)
+        username = cfg.get("username", "")
+        if not username or username == gse._DEFAULTS["username"]:
+            from faugus.config_manager import ConfigManager
+
+            global_username = (
+                ConfigManager().config.get("default-gse-username", "").strip('"')
+            )
+            if global_username:
+                username = global_username
+                cfg["persona_name"] = global_username
+        self.entry_appid.set_text(cfg.get("appid", ""))
+        self.entry_username.set_text(username or cfg.get("username", "Player"))
+        self.entry_persona.set_text(cfg.get("persona_name", "Player"))
+        lang = cfg.get("language", "english")
+        langs = gse.LANGUAGES
+        idx = langs.index(lang) if lang in langs else 0
+        self.combo_language.set_active(idx)
+        self.entry_steamid.set_text(cfg.get("steamid", ""))
+        self.entry_dll_path.set_text(cfg.get("dll_path", ""))
+        _forks = ["gse_fork", "gbe_fork"]
+        _fork_val = cfg.get("gse_fork_variant", "gse_fork")
+        self.combo_fork.set_active(_forks.index(_fork_val) if _fork_val in _forks else 0)
+        _variants = ["regular", "experimental"]
+        _var_val = cfg.get("fork_variant", "regular")
+        self.combo_variant.set_active(_variants.index(_var_val) if _var_val in _variants else 0)
+        self.check_offline.set_active(cfg.get("offline", False))
+        self.check_no_net.set_active(cfg.get("disable_networking", False))
+        self.check_fetch_ach.set_active(cfg.get("fetch_achievements", True))
+        self.check_unlock_dlc.set_active(cfg.get("unlock_all_dlc", False))
+        self.check_unknown_stats.set_active(cfg.get("allow_unknown_stats", False))
+        self.check_unknown_ach.set_active(cfg.get("allow_unknown_achievements", False))
+        self.check_leaderboards.set_active(cfg.get("auto_create_leaderboards", True))
+        self.check_overlay_exp.set_active(cfg.get("overlay_experimental", False))
+        self.check_overlay_ach.set_active(cfg.get("overlay_achievements", True))
+        self.check_overlay_ach_progress.set_active(cfg.get("overlay_achievement_progress", False))
+        self.check_overlay_friends.set_active(cfg.get("overlay_friends", True))
+        overlay_on = cfg.get("overlay_experimental", False)
+        self.check_overlay_ach.set_sensitive(overlay_on)
+        self.check_overlay_ach_progress.set_sensitive(overlay_on)
+        self.check_overlay_friends.set_sensitive(overlay_on)
+
+    def _on_overlay_exp_toggled(self, widget):
+        active = widget.get_active()
+        self.check_overlay_ach.set_sensitive(active)
+        self.check_overlay_ach_progress.set_sensitive(active)
+        self.check_overlay_friends.set_sensitive(active)
+
+    def _on_browse_dll(self, widget):
+        filechooser = Gtk.FileChooserNative(
+            title=_("Select the Steam API DLL"),
+            action=Gtk.FileChooserAction.OPEN,
+            accept_label=_("Open"),
+            cancel_label=_("Cancel"),
+        )
+        filter_dll = Gtk.FileFilter()
+        filter_dll.set_name(_("Steam API DLL"))
+        filter_dll.add_pattern("steam_api64.dll")
+        filter_dll.add_pattern("steam_api.dll")
+        filechooser.add_filter(filter_dll)
+        filechooser.set_filter(filter_dll)
+        response = filechooser.run()
+        if response == Gtk.ResponseType.ACCEPT:
+            selected = filechooser.get_filename()
+            if selected:
+                self.entry_dll_path.set_text(selected)
+        filechooser.destroy()
+
+    def _save_and_respond(self):
+        cfg = {
+            "appid": self.entry_appid.get_text().strip(),
+            "username": self.entry_username.get_text().strip() or "Player",
+            "persona_name": self.entry_persona.get_text().strip() or "Player",
+            "language": self.combo_language.get_active_text() or "english",
+            "steamid": self.entry_steamid.get_text().strip(),
+            "dll_path": self.entry_dll_path.get_text().strip(),
+            "gse_fork_variant": self.combo_fork.get_active_text() or "gse_fork",
+            "fork_variant": self.combo_variant.get_active_text() or "regular",
+            "offline": self.check_offline.get_active(),
+            "disable_networking": self.check_no_net.get_active(),
+            "unlock_all_dlc": self.check_unlock_dlc.get_active(),
+            "allow_unknown_stats": self.check_unknown_stats.get_active(),
+            "allow_unknown_achievements": self.check_unknown_ach.get_active(),
+            "auto_create_leaderboards": self.check_leaderboards.get_active(),
+            "overlay_experimental": self.check_overlay_exp.get_active(),
+            "overlay_achievements": self.check_overlay_ach.get_active(),
+            "overlay_achievement_progress": self.check_overlay_ach_progress.get_active(),
+            "overlay_friends": self.check_overlay_friends.get_active(),
+            "fetch_achievements": self.check_fetch_ach.get_active(),
+        }
+        gse.write_config(self.gameid, cfg)
+
+        if cfg["fetch_achievements"] and cfg["appid"]:
+            self._run_auto_fetch_and_close()
+        else:
+            self.response(Gtk.ResponseType.OK)
+
+    def _run_auto_fetch_and_close(self):
+        self.btn_ok.set_sensitive(False)
+        self.btn_ok.set_label(_("Fetching…"))
+        self.button_search_appid.set_sensitive(False)
+
+        def do_fetch():
+            ok, msg = gse.fetch_steam_config(self.gameid)
+            GLib.idle_add(self._auto_fetch_done, ok, msg)
+
+        threading.Thread(target=do_fetch, daemon=True).start()
+
+    def _auto_fetch_done(self, ok, msg):
+        self.btn_ok.set_label(_("Ok"))
+        self.btn_ok.set_sensitive(True)
+        self.button_search_appid.set_sensitive(True)
+        dialog = Gtk.MessageDialog(
+            parent=self,
+            modal=True,
+            message_type=Gtk.MessageType.INFO if ok else Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.OK,
+            text=msg,
+        )
+        dialog.run()
+        dialog.destroy()
+        self.response(Gtk.ResponseType.OK)
+        return False
+
+
 class AddGame(Gtk.Dialog, HiDpiMixin):
     def __init__(self, parent, interface_mode):
         super().__init__(title=_("New Game/App"), parent=parent)
@@ -5012,6 +5472,13 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.grid_prefix.set_margin_start(10)
         self.grid_prefix.set_margin_end(10)
         self.grid_prefix.set_margin_top(10)
+
+        self.grid_save_path = Gtk.Grid()
+        self.grid_save_path.set_row_spacing(10)
+        self.grid_save_path.set_column_spacing(10)
+        self.grid_save_path.set_margin_start(10)
+        self.grid_save_path.set_margin_end(10)
+        self.grid_save_path.set_margin_top(10)
 
         self.grid_runner = Gtk.Grid()
         self.grid_runner.set_row_spacing(10)
@@ -5144,6 +5611,30 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.button_search_prefix.set_image(Gtk.Image.new_from_icon_name("system-search-symbolic", Gtk.IconSize.BUTTON))
         self.button_search_prefix.connect("clicked", self.on_button_search_prefix_clicked)
         self.button_search_prefix.set_size_request(50, -1)
+
+        # Widgets for save path
+        self.label_save_path = Gtk.Label(label=_("Save Path"))
+        self.label_save_path.set_halign(Gtk.Align.START)
+        self.entry_save_path = Gtk.Entry()
+        self.entry_save_path.connect(
+            "changed", self.on_entry_changed, self.entry_save_path
+        )
+        self.entry_save_path.set_tooltip_text(_("/path/to/the/save/data"))
+        self.entry_save_path.set_has_tooltip(True)
+        self.entry_save_path.connect("query-tooltip", self.on_entry_query_tooltip)
+        self.button_lookup_save_path = Gtk.Button(label=_("Lookup"))
+        self.button_lookup_save_path.set_tooltip_text(
+            _("Try to find the save location on PCGamingWiki using the configured Steam AppID")
+        )
+        self.button_lookup_save_path.connect("clicked", self._on_lookup_save_path)
+        self.button_search_save_path = Gtk.Button()
+        self.button_search_save_path.set_image(
+            Gtk.Image.new_from_icon_name("system-search-symbolic", Gtk.IconSize.BUTTON)
+        )
+        self.button_search_save_path.connect(
+            "clicked", self.on_button_search_save_path_clicked
+        )
+        self.button_search_save_path.set_size_request(50, -1)
 
         self.label_runner = Gtk.Label(label=_("Proton"))
         self.label_runner.set_halign(Gtk.Align.START)
@@ -5331,6 +5822,14 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.entry_prefix.set_hexpand(True)
         self.grid_prefix.attach(self.button_search_prefix, 3, 1, 1, 1)
 
+        save_path_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        save_path_box.pack_start(self.entry_save_path, True, True, 0)
+        save_path_box.pack_start(self.button_lookup_save_path, False, False, 0)
+        save_path_box.pack_start(self.button_search_save_path, False, False, 0)
+        self.entry_save_path.set_hexpand(True)
+        self.grid_save_path.attach(self.label_save_path, 0, 0, 1, 1)
+        self.grid_save_path.attach(save_path_box, 0, 1, 4, 1)
+
         self.grid_runner.attach(self.label_runner, 0, 0, 1, 1)
         self.grid_runner.attach(self.combobox_runner, 0, 1, 1, 1)
         self.combobox_runner.set_hexpand(True)
@@ -5351,6 +5850,7 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         page1.add(self.grid_title)
         page1.add(self.grid_path)
         page1.add(self.grid_prefix)
+        page1.add(self.grid_save_path)
         page1.add(self.grid_runner)
         page1.add(self.label_shortcut)
         page1.add(self.box_shortcut)
@@ -5627,6 +6127,62 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         surface = self.new_surface_from_image(self.banner_path_temp, 260, 390, True)
         self.image_banner.set_from_surface(surface)
         self.image_banner2.set_from_surface(surface)
+
+    def _on_lookup_save_path(self, widget):
+        title = self.entry_title.get_text().strip()
+        if not title:
+            return
+
+        gameid = format_title(title)
+        appid = gse.read_config(gameid).get("appid", "").strip()
+        if not appid:
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text=_("No Steam AppID configured"),
+                secondary_text=_(
+                    "Set the Steam AppID in this game's Goldberg Emulator settings first, then try the lookup again."
+                ),
+            )
+            dialog.run()
+            dialog.destroy()
+            return
+
+        prefix = self.entry_prefix.get_text().strip()
+
+        self.button_lookup_save_path.set_sensitive(False)
+        self.button_lookup_save_path.set_label(_("Looking up…"))
+
+        def do_lookup():
+            rel_path = gse.lookup_save_path(appid)
+            GLib.idle_add(self._lookup_save_path_done, rel_path, prefix)
+
+        threading.Thread(target=do_lookup, daemon=True).start()
+
+    def _lookup_save_path_done(self, rel_path, prefix):
+        self.button_lookup_save_path.set_label(_("Lookup"))
+        self.button_lookup_save_path.set_sensitive(True)
+
+        if not rel_path:
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text=_("Couldn't determine the save location"),
+                secondary_text=_(
+                    "PCGamingWiki doesn't have a usable save location for this AppID. Please enter the path manually."
+                ),
+            )
+            dialog.run()
+            dialog.destroy()
+            return False
+
+        full_path = os.path.normpath(os.path.join(prefix, rel_path)) if prefix else rel_path
+        self.entry_save_path.set_text(full_path)
+        return False
 
     def on_entry_focus_out(self, entry_title, event):
         if entry_title.get_text() != "":
@@ -6024,6 +6580,26 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
             new_prefix = filechooser.get_filename()
             self.default_prefix = new_prefix
             self.entry_prefix.set_text(self.default_prefix)
+
+        filechooser.destroy()
+
+    def on_button_search_save_path_clicked(self, widget):
+        filechooser = Gtk.FileChooserNative(
+            title=_("Select the save data location"),
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+            accept_label=_("Open"),
+            cancel_label=_("Cancel"),
+        )
+
+        if self.entry_save_path.get_text():
+            filechooser.set_current_folder(self.entry_save_path.get_text())
+        elif self.entry_prefix.get_text():
+            filechooser.set_current_folder(self.entry_prefix.get_text())
+
+        response = filechooser.run()
+
+        if response == Gtk.ResponseType.ACCEPT:
+            self.entry_save_path.set_text(filechooser.get_filename())
 
         filechooser.destroy()
 

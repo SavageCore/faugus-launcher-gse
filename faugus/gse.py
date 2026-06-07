@@ -1,5 +1,6 @@
 import configparser
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -1169,3 +1170,168 @@ def export_game(game_path: str, gameid: str, fork: str, destination: Path) -> "t
     if not has_settings:
         msg += "\n\nNote: no GSE settings were found for this game. Open Goldberg Settings and save first for a fully configured export."
     return True, msg
+
+
+# ---------------------------------------------------------------------------
+# Save data location
+# ---------------------------------------------------------------------------
+
+_PCGW_API = "https://www.pcgamingwiki.com/w/api.php"
+
+# Maps {{p|...}}/{{path|...}} macro keys (lower-cased, as they appear in
+# PCGamingWiki's "Save game data location" wikitext) to the equivalent
+# subpath inside a Wine prefix's "steamuser" profile.
+_PCGW_PATH_MACROS = {
+    "userprofile": "drive_c/users/steamuser",
+    "userprofile\\documents": "drive_c/users/steamuser/Documents",
+    "documents": "drive_c/users/steamuser/Documents",
+    "userprofile\\appdata\\roaming": "drive_c/users/steamuser/AppData/Roaming",
+    "appdata": "drive_c/users/steamuser/AppData/Roaming",
+    "userprofile\\appdata\\local": "drive_c/users/steamuser/AppData/Local",
+    "localappdata": "drive_c/users/steamuser/AppData/Local",
+    "userprofile\\appdata\\locallow": "drive_c/users/steamuser/AppData/LocalLow",
+    "userprofile\\saved games": "drive_c/users/steamuser/Saved Games",
+    "public": "drive_c/users/Public",
+    "programdata": "drive_c/ProgramData",
+    "allusersprofile": "drive_c/ProgramData",
+}
+
+_PCGW_SAVE_TEMPLATE_RE = re.compile(r"\{\{Game data/saves\s*\|\s*Windows\b", re.IGNORECASE)
+_PCGW_MACRO_RE = re.compile(r"\{\{p(?:ath)?\|([^{}]+)\}\}", re.IGNORECASE)
+
+
+def _pcgw_extract_balanced(text: str, start: int) -> "str | None":
+    """Return the wikitext template starting at the '{{' at/after `start` up
+    to its matching '}}', accounting for templates nested inside it."""
+    open_at = text.find("{{", start)
+    if open_at == -1:
+        return None
+
+    depth = 0
+    i = open_at
+    n = len(text)
+    while i < n - 1:
+        chunk = text[i:i + 2]
+        if chunk == "{{":
+            depth += 1
+            i += 2
+        elif chunk == "}}":
+            depth -= 1
+            i += 2
+            if depth == 0:
+                return text[open_at:i]
+        else:
+            i += 1
+    return None
+
+
+def _pcgw_translate_path(raw: str) -> "str | None":
+    """Translate a save-path payload (which may embed {{p|...}} macros) into a
+    path relative to a Wine prefix root, or None if a macro isn't recognised."""
+    for key in _PCGW_MACRO_RE.findall(raw):
+        if key.strip().lower() not in _PCGW_PATH_MACROS:
+            return None
+
+    translated = _PCGW_MACRO_RE.sub(
+        lambda m: _PCGW_PATH_MACROS[m.group(1).strip().lower()], raw
+    )
+    translated = translated.replace("\\", "/").strip()
+    while "//" in translated:
+        translated = translated.replace("//", "/")
+    translated = translated.rstrip("/")
+    return translated or None
+
+
+def _pcgw_page_for_appid(appid: str) -> "str | None":
+    import requests
+
+    r = requests.get(
+        _PCGW_API,
+        params={
+            "action": "cargoquery",
+            "tables": "Infobox_game",
+            "fields": "Infobox_game._pageName=Page",
+            "where": f'Infobox_game.Steam_AppID HOLDS "{appid}"',
+            "format": "json",
+        },
+        timeout=10,
+    )
+    r.raise_for_status()
+    rows = r.json().get("cargoquery", [])
+    if not rows:
+        return None
+    return rows[0].get("title", {}).get("Page")
+
+
+def _pcgw_save_section_wikitext(page: str) -> "str | None":
+    import requests
+
+    r = requests.get(
+        _PCGW_API,
+        params={"action": "parse", "page": page, "prop": "sections", "format": "json"},
+        timeout=10,
+    )
+    r.raise_for_status()
+    index = None
+    for section in r.json().get("parse", {}).get("sections", []):
+        if section.get("line", "").strip().lower() == "save game data location":
+            index = section.get("index")
+            break
+    if index is None:
+        return None
+
+    r = requests.get(
+        _PCGW_API,
+        params={
+            "action": "parse",
+            "page": page,
+            "prop": "wikitext",
+            "section": index,
+            "format": "json",
+        },
+        timeout=10,
+    )
+    r.raise_for_status()
+    return r.json().get("parse", {}).get("wikitext", {}).get("*")
+
+
+def lookup_save_path(appid: str) -> "str | None":
+    """Best-effort lookup of a game's Windows save location on PCGamingWiki,
+    translated to a path relative to a Wine prefix root (e.g.
+    "drive_c/users/steamuser/Documents/My Game"). Returns None if the page,
+    the section, the template, or any of its path macros can't be resolved -
+    PCGamingWiki doesn't expose this as a queryable field, only as wikitext,
+    so lookups on stub pages or unusual templates are expected to fail."""
+    appid = (appid or "").strip()
+    if not appid:
+        return None
+
+    try:
+        page = _pcgw_page_for_appid(appid)
+        if not page:
+            return None
+
+        wikitext = _pcgw_save_section_wikitext(page)
+        if not wikitext:
+            return None
+
+        match = _PCGW_SAVE_TEMPLATE_RE.search(wikitext)
+        if not match:
+            return None
+
+        template = _pcgw_extract_balanced(wikitext, match.start())
+        if not template:
+            return None
+
+        # template looks like "{{Game data/saves|Windows|<path>}}" (possibly
+        # "Windows 3.x" etc.) - drop the outer braces and the leading parts.
+        inner = template[2:-2]
+        _, _, payload = inner.partition("|Windows")
+        _, _, raw_path = payload.partition("|")
+        raw_path = raw_path.strip()
+        if not raw_path:
+            return None
+
+        return _pcgw_translate_path(raw_path)
+    except Exception:
+        return None
