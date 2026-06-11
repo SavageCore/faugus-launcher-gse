@@ -44,6 +44,8 @@ class ConfigManager:
             'category': 'all',
             'steam-api-key': '',
             'default-gse-username': '',
+            'gse-remember-login': 'True',
+            'gse-login-skip-app-confirmation': 'False',
             'sgdb-api-key': '',
         }
 

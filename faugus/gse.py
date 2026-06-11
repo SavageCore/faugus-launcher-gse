@@ -123,7 +123,11 @@ def _update_overlay_ini(
 
     ini.set(section, "enable_experimental_overlay", "1" if experimental else "0")
     ini.set(section, "disable_achievement_notification", "0" if achievements else "1")
-    ini.set(section, "disable_achievement_progress_notification", "0" if achievement_progress else "1")
+    ini.set(
+        section,
+        "disable_achievement_progress_notification",
+        "0" if achievement_progress else "1",
+    )
     ini.set(section, "disable_friend_notification", "0" if friends else "1")
     for stale in ("show_achievement_notifications", "show_friend_notifications"):
         if ini.has_option(section, stale):
@@ -237,9 +241,7 @@ def _download_release(version: str, fork: str = "gse_fork") -> None:
         found = set()
         for root, _, files in os.walk(extract_dir):
             parts = Path(root).parts
-            variant = next(
-                (p for p in parts if p in ("regular", "experimental")), None
-            )
+            variant = next((p for p in parts if p in ("regular", "experimental")), None)
             if variant is None:
                 continue
             for fname in files:
@@ -298,7 +300,12 @@ def update_gse(fork: str = "gse_fork") -> None:
         not (binary_dir / "regular").exists()
         and not (binary_dir / "experimental").exists()
     )
-    if latest != current or not is_installed(fork) or tools_missing or variant_dirs_missing:
+    if (
+        latest != current
+        or not is_installed(fork)
+        or tools_missing
+        or variant_dirs_missing
+    ):
         _download_release(latest, fork)
     else:
         print(f"[gse:{fork}] {fork} is up to date ({current}).", flush=True)
@@ -432,6 +439,31 @@ def _saved_token_username() -> str | None:
     return None
 
 
+def _clear_saved_token(username: str | None = None) -> None:
+    """Clear saved refresh token(s) from refresh_tokens.json."""
+    import json
+
+    token_file = _TOOLS_EXE_DIR / "refresh_tokens.json"
+    if not token_file.exists():
+        return
+    if username is None:
+        token_file.unlink(missing_ok=True)
+        return
+    try:
+        tokens = json.loads(token_file.read_text(encoding="utf-8"))
+        if isinstance(tokens, dict) and username in tokens:
+            del tokens[username]
+            if tokens:
+                token_file.write_text(
+                    json.dumps(tokens, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            else:
+                token_file.unlink(missing_ok=True)
+    except Exception:
+        token_file.unlink(missing_ok=True)
+
+
 def _read_global_config(key: str, default: str = "") -> str:
     config_path = Path(PathManager.user_config("faugus-launcher/config.ini"))
     if not config_path.exists():
@@ -445,6 +477,10 @@ def _read_global_config(key: str, default: str = "") -> str:
     except Exception:
         pass
     return default
+
+
+def _read_global_bool(key: str, default: bool = False) -> bool:
+    return _read_global_config(key, "True" if default else "False").lower() == "true"
 
 
 def _fetch_via_webapi(appid: str, api_key: str, settings_dst: Path) -> tuple[bool, str]:
@@ -497,7 +533,12 @@ def _fetch_via_webapi(appid: str, api_key: str, settings_dst: Path) -> tuple[boo
     )
 
 
-def fetch_steam_config(gameid: str, twofa_cb=None) -> tuple[bool, str]:
+def fetch_steam_config(
+    gameid: str,
+    twofa_cb=None,
+    auth_cb=None,
+    _token_retry: bool = True,
+) -> tuple[bool, str]:
     """Fetch achievement/stats config from Steam for gameid.
 
     Uses the Steam Web API when a key is configured in global settings.
@@ -534,18 +575,60 @@ def fetch_steam_config(gameid: str, twofa_cb=None) -> tuple[bool, str]:
             "No Steam API key set and gen_emu_cfg not installed - add an API key in Settings or restart faugus",
         )
 
-    username = _saved_token_username()
+    remember_login_pref = _read_global_bool("gse-remember-login", True)
+    username = _saved_token_username() if remember_login_pref else None
+    remembered_login = False
+    login_skip_app_confirmation = _read_global_bool(
+        "gse-login-skip-app-confirmation", False
+    )
+    login_password = ""
+
     if username:
+        remembered_login = True
         cmd = [str(_TOOLS_EXE), "-clr", "-skip_con", "-skip_inv", "-tok", appid]
     else:
-        cmd = [str(_TOOLS_EXE), "-anon", "-clr", "-skip_con", "-skip_inv", appid]
+        login_data = auth_cb() if auth_cb else None
+        if auth_cb and login_data is None:
+            return False, "Steam login cancelled"
+        if login_data is None:
+            cmd = [str(_TOOLS_EXE), "-anon", "-clr", "-skip_con", "-skip_inv", appid]
+        else:
+            username = str(login_data.get("username", "")).strip()
+            login_password = str(login_data.get("password", ""))
+            remembered_login = bool(login_data.get("remember_login", True))
+            login_skip_app_confirmation = bool(
+                login_data.get(
+                    "login_skip_app_confirmation",
+                    login_skip_app_confirmation,
+                )
+            )
+            if username and username.lower() != "anonymous":
+                cmd = [str(_TOOLS_EXE), "-clr", "-skip_con", "-skip_inv"]
+                if remembered_login:
+                    cmd.append("-tok")
+                cmd.append(appid)
+            else:
+                username = None
+                cmd = [
+                    str(_TOOLS_EXE),
+                    "-anon",
+                    "-clr",
+                    "-skip_con",
+                    "-skip_inv",
+                    appid,
+                ]
 
     env = os.environ.copy()
     if username:
         env["GSE_CFG_USERNAME"] = username
+    if login_password:
+        env["GSE_CFG_PASSWORD"] = login_password
     env["PYTHONUNBUFFERED"] = "1"
 
-    _log(f"fetch: using gse_tools (token={'yes' if username else 'none, using anon'})")
+    _log(
+        f"fetch: using gse_tools (token={'yes' if remembered_login else 'no'}, "
+        f"auth={'yes' if username else 'anonymous'})"
+    )
 
     try:
         proc = subprocess.Popen(
@@ -555,6 +638,7 @@ def fetch_steam_config(gameid: str, twofa_cb=None) -> tuple[bool, str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=0,
+            env=env,
         )
     except Exception as e:
         return False, str(e)
@@ -566,6 +650,22 @@ def fetch_steam_config(gameid: str, twofa_cb=None) -> tuple[bool, str]:
         "emailed to you",
         "enter code",
     )
+    _APP_CONFIRM_KW = (
+        "confirm your login",
+        "confirm login",
+        "steam mobile app",
+        "mobile app",
+        "device confirmation",
+    )
+    _INVALID_TOKEN_KW = (
+        "invalid refresh token",
+        "refresh token invalid",
+        "refresh token expired",
+        "refresh token revoked",
+        "revoked refresh token",
+        "expired refresh token",
+    )
+    invalid_token_detected = False
 
     def _handle_twofa(prompt: str) -> bool:
         if twofa_cb:
@@ -578,6 +678,14 @@ def fetch_steam_config(gameid: str, twofa_cb=None) -> tuple[bool, str]:
             return True
         proc.kill()
         return False
+
+    def _handle_app_confirmation(prompt: str) -> None:
+        if not login_skip_app_confirmation:
+            return
+        low = prompt.lower()
+        if any(kw in low for kw in _APP_CONFIRM_KW) and proc.stdin:
+            proc.stdin.write(b"n\n")
+            proc.stdin.flush()
 
     import select
 
@@ -603,6 +711,9 @@ def fetch_steam_config(gameid: str, twofa_cb=None) -> tuple[bool, str]:
                 if any(kw in low for kw in _TWOFA_KW):
                     if not _handle_twofa(line):
                         return False, "Steam 2FA cancelled or not supported"
+                _handle_app_confirmation(line)
+                if remembered_login and any(kw in low for kw in _INVALID_TOKEN_KW):
+                    invalid_token_detected = True
             else:
                 text = buf.decode(errors="replace")
                 if len(text) >= 8 and any(kw in text.lower() for kw in _TWOFA_KW):
@@ -610,9 +721,35 @@ def fetch_steam_config(gameid: str, twofa_cb=None) -> tuple[bool, str]:
                     buf = b""
                     if not _handle_twofa(text.strip()):
                         return False, "Steam 2FA cancelled or not supported"
+                _handle_app_confirmation(text)
+                if remembered_login and any(
+                    kw in text.lower() for kw in _INVALID_TOKEN_KW
+                ):
+                    invalid_token_detected = True
     except Exception as e:
         proc.kill()
         return False, str(e)
+
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+
+    if remembered_login and invalid_token_detected:
+        _clear_saved_token(username)
+        if _token_retry and auth_cb:
+            _log("fetch: saved token invalid/revoked; cleared token and retrying login")
+            return fetch_steam_config(
+                gameid,
+                twofa_cb=twofa_cb,
+                auth_cb=auth_cb,
+                _token_retry=False,
+            )
+        return (
+            False,
+            "Saved Steam token is invalid or revoked - token cleared, log in again",
+        )
 
     out_root = _TOOLS_EXE_DIR / "_OUTPUT"
     settings_src = None
@@ -755,8 +892,12 @@ def read_config(gameid: str) -> dict:
                 "faugus", "fetch_achievements", fallback=cfg["fetch_achievements"]
             )
             cfg["dll_path"] = parser.get("faugus", "dll_path", fallback="")
-            cfg["gse_fork_variant"] = parser.get("faugus", "gse_fork_variant", fallback="gse_fork")
-            cfg["fork_variant"] = parser.get("faugus", "fork_variant", fallback="regular")
+            cfg["gse_fork_variant"] = parser.get(
+                "faugus", "gse_fork_variant", fallback="gse_fork"
+            )
+            cfg["fork_variant"] = parser.get(
+                "faugus", "fork_variant", fallback="regular"
+            )
 
     app_ini = settings_dir / "configs.app.ini"
     if app_ini.exists():
@@ -903,15 +1044,20 @@ def _log(msg: str) -> None:
     print(f"[gse] {msg}", flush=True)
 
 
-def _find_dll(start_dir: Path, dll_name: str, max_parents: int = 0, override: str = "") -> "Path | None":
+def _find_dll(
+    start_dir: Path, dll_name: str, max_parents: int = 0, override: str = ""
+) -> "Path | None":
     if override:
         p = Path(override)
         if p.name == dll_name and p.exists():
             return p
     search_dir = start_dir
     for _ in range(max_parents + 1):
-        matches = [m for m in search_dir.rglob(dll_name)
-                   if not any(m.is_relative_to(d) for d in _ALL_BINARY_DIRS)]
+        matches = [
+            m
+            for m in search_dir.rglob(dll_name)
+            if not any(m.is_relative_to(d) for d in _ALL_BINARY_DIRS)
+        ]
         if matches:
             return matches[0]
         parent = search_dir.parent
@@ -962,7 +1108,9 @@ def prepare_goldberg(game: dict) -> None:
     for dll_name in _DLL_NAMES:
         game_dll = _find_dll(game_dir, dll_name, override=dll_path_override)
         if game_dll is None:
-            _log(f"prepare: {dll_name} not found under {game_dir} (or parents), skipping")
+            _log(
+                f"prepare: {dll_name} not found under {game_dir} (or parents), skipping"
+            )
             continue
         if dll_path_override and game_dll == Path(dll_path_override):
             _log(f"prepare: {dll_name}: using override path {game_dll}")
@@ -1007,13 +1155,7 @@ def prepare_goldberg(game: dict) -> None:
     if orig_for_interfaces and orig_for_interfaces.exists():
         gi_x64 = binary_dir / "generate_interfaces_x64"
         gi_x32 = binary_dir / "generate_interfaces_x32"
-        tool = (
-            gi_x64
-            if gi_x64.exists()
-            else gi_x32
-            if gi_x32.exists()
-            else None
-        )
+        tool = gi_x64 if gi_x64.exists() else gi_x32 if gi_x32.exists() else None
         if tool:
             try:
                 result = subprocess.run(
@@ -1025,9 +1167,13 @@ def prepare_goldberg(game: dict) -> None:
                     text=True,
                 )
                 if result.stdout.strip():
-                    _log(f"prepare: generate_interfaces stdout: {result.stdout.strip()}")
+                    _log(
+                        f"prepare: generate_interfaces stdout: {result.stdout.strip()}"
+                    )
                 if result.stderr.strip():
-                    _log(f"prepare: generate_interfaces stderr: {result.stderr.strip()}")
+                    _log(
+                        f"prepare: generate_interfaces stderr: {result.stderr.strip()}"
+                    )
                 if result.returncode != 0:
                     _log(f"prepare: generate_interfaces exited {result.returncode}")
                 if (settings_dst / "steam_interfaces.txt").exists():
@@ -1037,7 +1183,9 @@ def prepare_goldberg(game: dict) -> None:
             except Exception as e:
                 _log(f"prepare: generate_interfaces failed: {e}")
         else:
-            _log("prepare: generate_interfaces tool not found - restart faugus to download")
+            _log(
+                "prepare: generate_interfaces tool not found - restart faugus to download"
+            )
 
     _log("prepare: done")
 
@@ -1076,8 +1224,12 @@ def restore_goldberg(game: dict) -> None:
     _log("restore: done")
 
 
-def export_game(game_path: str, gameid: str, fork: str, destination: Path) -> "tuple[bool, str]":
-    _log(f"export: gameid={gameid!r} path={game_path!r} fork={fork!r} dest={destination}")
+def export_game(
+    game_path: str, gameid: str, fork: str, destination: Path
+) -> "tuple[bool, str]":
+    _log(
+        f"export: gameid={gameid!r} path={game_path!r} fork={fork!r} dest={destination}"
+    )
 
     if not game_path:
         return False, "no game path configured"
@@ -1116,7 +1268,9 @@ def export_game(game_path: str, gameid: str, fork: str, destination: Path) -> "t
         if not src_dll.exists():
             src_dll = binary_dir / dll_name
         if not src_dll.exists():
-            _log(f"export: Goldberg {dll_name} not in binary dir {binary_dir}, skipping")
+            _log(
+                f"export: Goldberg {dll_name} not in binary dir {binary_dir}, skipping"
+            )
             continue
 
         if dll_for_interfaces is None:
@@ -1196,7 +1350,9 @@ _PCGW_PATH_MACROS = {
     "allusersprofile": "drive_c/ProgramData",
 }
 
-_PCGW_SAVE_TEMPLATE_RE = re.compile(r"\{\{Game data/saves\s*\|\s*Windows\b", re.IGNORECASE)
+_PCGW_SAVE_TEMPLATE_RE = re.compile(
+    r"\{\{Game data/saves\s*\|\s*Windows\b", re.IGNORECASE
+)
 _PCGW_MACRO_RE = re.compile(r"\{\{p(?:ath)?\|([^{}]+)\}\}", re.IGNORECASE)
 
 
@@ -1211,7 +1367,7 @@ def _pcgw_extract_balanced(text: str, start: int) -> "str | None":
     i = open_at
     n = len(text)
     while i < n - 1:
-        chunk = text[i:i + 2]
+        chunk = text[i : i + 2]
         if chunk == "{{":
             depth += 1
             i += 2

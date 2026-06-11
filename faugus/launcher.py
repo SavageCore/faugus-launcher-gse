@@ -3819,6 +3819,62 @@ class Settings(Gtk.Dialog):
         self.button_search_prefix.connect("clicked", self.on_button_search_prefix_clicked)
         self.button_search_prefix.set_size_request(50, -1)
 
+        self.label_gse_settings = Gtk.Label(label=_("Goldberg Emulator"))
+        self.label_gse_settings.set_halign(Gtk.Align.START)
+
+        self.label_steam_api_key = Gtk.Label(label=_("Steam Web API Key"))
+        self.label_steam_api_key.set_halign(Gtk.Align.START)
+
+        self.entry_steam_api_key = Gtk.Entry()
+        self.entry_steam_api_key.set_tooltip_text(
+            _(
+                "Used to fetch achievements. Get one at store.steampowered.com/dev/apikey"
+            )
+        )
+        self.entry_steam_api_key.set_has_tooltip(True)
+        self.entry_steam_api_key.set_visibility(False)
+        self.entry_steam_api_key.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+
+        self.label_gse_username = Gtk.Label(label=_("Default Username"))
+        self.label_gse_username.set_halign(Gtk.Align.START)
+
+        self.entry_gse_username = Gtk.Entry()
+        self.entry_gse_username.set_tooltip_text(
+            _(
+                "Default player name for all games (can be overridden per game in Goldberg Settings)"
+            )
+        )
+        self.entry_gse_username.set_has_tooltip(True)
+        self.checkbox_gse_remember_login = Gtk.CheckButton(
+            label=_("Remember Steam login token")
+        )
+        self.checkbox_gse_remember_login.set_tooltip_text(
+            _(
+                "Store a refresh token for gse_tools so future Steam fetches can log in automatically."
+            )
+        )
+        self.checkbox_gse_skip_app_confirmation = Gtk.CheckButton(
+            label=_("Prefer code entry over app confirmation")
+        )
+        self.checkbox_gse_skip_app_confirmation.set_tooltip_text(
+            _(
+                "Try code-based Steam Guard flow instead of waiting for Steam Mobile app confirmation."
+            )
+        )
+
+        self.label_sgdb_api_key = Gtk.Label(label=_("SteamGridDB API Key"))
+        self.label_sgdb_api_key.set_halign(Gtk.Align.START)
+
+        self.entry_sgdb_api_key = Gtk.Entry()
+        self.entry_sgdb_api_key.set_tooltip_text(
+            _(
+                "Used to open games on SteamGridDB. Get one at steamgriddb.com/profile/preferences/api"
+            )
+        )
+        self.entry_sgdb_api_key.set_has_tooltip(True)
+        self.entry_sgdb_api_key.set_visibility(False)
+        self.entry_sgdb_api_key.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+
         self.label_lossless = Gtk.Label(label=_("Lossless Scaling Location"))
         self.label_lossless.set_halign(Gtk.Align.START)
 
@@ -4024,6 +4080,14 @@ class Settings(Gtk.Dialog):
         grid_lossless.set_margin_top(10)
         grid_lossless.set_margin_bottom(10)
 
+        grid_gse = Gtk.Grid()
+        grid_gse.set_row_spacing(10)
+        grid_gse.set_column_spacing(10)
+        grid_gse.set_margin_start(10)
+        grid_gse.set_margin_end(10)
+        grid_gse.set_margin_top(10)
+        grid_gse.set_margin_bottom(10)
+
         grid_tools = Gtk.Grid()
         grid_tools.set_row_spacing(10)
         grid_tools.set_column_spacing(10)
@@ -4105,6 +4169,19 @@ class Settings(Gtk.Dialog):
         grid_lossless.attach(self.entry_lossless, 0, 1, 3, 1)
         grid_lossless.attach(self.button_search_lossless, 3, 1, 1, 1)
 
+        grid_gse.attach(self.label_gse_settings, 0, 0, 1, 1)
+        grid_gse.attach(self.label_steam_api_key, 0, 1, 1, 1)
+        grid_gse.attach(self.entry_steam_api_key, 0, 2, 1, 1)
+        grid_gse.attach(self.label_gse_username, 0, 3, 1, 1)
+        grid_gse.attach(self.entry_gse_username, 0, 4, 1, 1)
+        grid_gse.attach(self.checkbox_gse_remember_login, 0, 5, 1, 1)
+        grid_gse.attach(self.checkbox_gse_skip_app_confirmation, 0, 6, 1, 1)
+        grid_gse.attach(self.label_sgdb_api_key, 0, 7, 1, 1)
+        grid_gse.attach(self.entry_sgdb_api_key, 0, 8, 1, 1)
+        self.entry_steam_api_key.set_hexpand(True)
+        self.entry_gse_username.set_hexpand(True)
+        self.entry_sgdb_api_key.set_hexpand(True)
+
         self.combobox_runner.set_hexpand(True)
         self.button_proton_manager.set_hexpand(True)
         self.entry_lossless.set_hexpand(True)
@@ -4161,6 +4238,7 @@ class Settings(Gtk.Dialog):
         box_left.pack_start(self.label_default_prefix_tools, False, False, 0)
         box_left.pack_start(grid_tools, False, False, 0)
         box_left.pack_start(grid_lossless, False, False, 0)
+        box_left.pack_start(grid_gse, False, False, 0)
         box_left.pack_end(grid_language, False, False, 0)
 
         box_mid.pack_start(self.label_miscellaneous, False, False, 0)
@@ -4352,7 +4430,21 @@ class Settings(Gtk.Dialog):
         config.set_value("gamepad-navigation", self.checkbox_gamepad_navigation.get_active())
         config.set_value("start-minimized", self.checkbox_start_minimized.get_active())
         config.set_value("show-categories", self.checkbox_show_categories.get_active())
-        config.set_value("window-behavior", self.combobox_window_behavior.get_active_id())
+        config.set_value(
+            "window-behavior", self.combobox_window_behavior.get_active_id()
+        )
+        config.set_value("steam-api-key", self.entry_steam_api_key.get_text().strip())
+        config.set_value(
+            "default-gse-username", self.entry_gse_username.get_text().strip()
+        )
+        config.set_value(
+            "gse-remember-login", self.checkbox_gse_remember_login.get_active()
+        )
+        config.set_value(
+            "gse-login-skip-app-confirmation",
+            self.checkbox_gse_skip_app_confirmation.get_active(),
+        )
+        config.set_value("sgdb-api-key", self.entry_sgdb_api_key.get_text().strip())
         config.save_config()
 
         self.set_sensitive(False)
@@ -4682,35 +4774,47 @@ class Settings(Gtk.Dialog):
     def load_config(self):
         cfg = ConfigManager()
 
-        close_on_launch = cfg.config.get('close-onlaunch', 'False') == 'True'
-        self.default_prefix = cfg.config.get('default-prefix', '').strip('"')
-        mangohud = cfg.config.get('mangohud', 'False') == 'True'
-        gamemode = cfg.config.get('gamemode', 'False') == 'True'
-        disable_hidraw = cfg.config.get('disable-hidraw', 'False') == 'True'
-        prevent_sleep = cfg.config.get('prevent-sleep', 'False') == 'True'
-        self.default_runner = cfg.config.get('default-runner', '').strip('"')
-        lossless_location = cfg.config.get('lossless-location', '').strip('"')
-        discrete_gpu = cfg.config.get('discrete-gpu', 'False') == 'True'
-        splash_disable = cfg.config.get('splash-disable', 'False') == 'True'
-        disable_updates = cfg.config.get('disable-updates', 'False') == 'True'
-        system_tray = cfg.config.get('system-tray', 'False') == 'True'
-        self.start_boot = cfg.config.get('start-boot', 'False') == 'True'
-        self.mono_icon = cfg.config.get('mono-icon', 'False') == 'True'
-        self.interface_mode = cfg.config.get('interface-mode', '').strip('"')
-        show_labels = cfg.config.get('show-labels', 'False') == 'True'
-        enable_logging = cfg.config.get('enable-logging', 'False') == 'True'
-        show_hidden = cfg.config.get('show-hidden', 'False') == 'True'
-        gamepad_navigation = cfg.config.get('gamepad-navigation', 'False') == 'True'
-        wayland_driver = cfg.config.get('wayland-driver', 'False') == 'True'
-        enable_wow64 = cfg.config.get('enable-wow64', 'False') == 'True'
-        self.language = cfg.config.get('language', '')
-        self.logging_warning = cfg.config.get('logging-warning', 'False') == 'True'
-        start_minimized = cfg.config.get('start-minimized', 'False') == 'True'
-        show_categories = cfg.config.get('show-categories', 'False') == 'True'
-        window_behavior = cfg.config.get('window-behavior', '')
+        close_on_launch = cfg.config.get("close-onlaunch", "False") == "True"
+        self.default_prefix = cfg.config.get("default-prefix", "").strip('"')
+        mangohud = cfg.config.get("mangohud", "False") == "True"
+        gamemode = cfg.config.get("gamemode", "False") == "True"
+        disable_hidraw = cfg.config.get("disable-hidraw", "False") == "True"
+        prevent_sleep = cfg.config.get("prevent-sleep", "False") == "True"
+        self.default_runner = cfg.config.get("default-runner", "").strip('"')
+        lossless_location = cfg.config.get("lossless-location", "").strip('"')
+        discrete_gpu = cfg.config.get("discrete-gpu", "False") == "True"
+        splash_disable = cfg.config.get("splash-disable", "False") == "True"
+        disable_updates = cfg.config.get("disable-updates", "False") == "True"
+        system_tray = cfg.config.get("system-tray", "False") == "True"
+        self.start_boot = cfg.config.get("start-boot", "False") == "True"
+        self.mono_icon = cfg.config.get("mono-icon", "False") == "True"
+        self.interface_mode = cfg.config.get("interface-mode", "").strip('"')
+        show_labels = cfg.config.get("show-labels", "False") == "True"
+        enable_logging = cfg.config.get("enable-logging", "False") == "True"
+        show_hidden = cfg.config.get("show-hidden", "False") == "True"
+        gamepad_navigation = cfg.config.get("gamepad-navigation", "False") == "True"
+        wayland_driver = cfg.config.get("wayland-driver", "False") == "True"
+        enable_wow64 = cfg.config.get("enable-wow64", "False") == "True"
+        self.language = cfg.config.get("language", "")
+        self.logging_warning = cfg.config.get("logging-warning", "False") == "True"
+        start_minimized = cfg.config.get("start-minimized", "False") == "True"
+        show_categories = cfg.config.get("show-categories", "False") == "True"
+        window_behavior = cfg.config.get("window-behavior", "")
+        steam_api_key = cfg.config.get("steam-api-key", "").strip('"')
+        default_gse_username = cfg.config.get("default-gse-username", "").strip('"')
+        gse_remember_login = cfg.config.get("gse-remember-login", "True") == "True"
+        gse_skip_app_confirmation = (
+            cfg.config.get("gse-login-skip-app-confirmation", "False") == "True"
+        )
+        sgdb_api_key = cfg.config.get("sgdb-api-key", "").strip('"')
 
         self.checkbox_close_after_launch.set_active(close_on_launch)
         self.entry_default_prefix.set_text(self.default_prefix)
+        self.entry_steam_api_key.set_text(steam_api_key)
+        self.entry_gse_username.set_text(default_gse_username)
+        self.checkbox_gse_remember_login.set_active(gse_remember_login)
+        self.checkbox_gse_skip_app_confirmation.set_active(gse_skip_app_confirmation)
+        self.entry_sgdb_api_key.set_text(sgdb_api_key)
 
         self.checkbox_mangohud.set_active(mangohud)
         self.checkbox_gamemode.set_active(gamemode)
@@ -5370,7 +5474,11 @@ class GoldbergDialog(Gtk.Dialog):
         self.button_search_appid.set_sensitive(False)
 
         def do_fetch():
-            ok, msg = gse.fetch_steam_config(self.gameid)
+            ok, msg = gse.fetch_steam_config(
+                self.gameid,
+                twofa_cb=self._prompt_steam_twofa_code,
+                auth_cb=self._prompt_steam_login,
+            )
             GLib.idle_add(self._auto_fetch_done, ok, msg)
 
         threading.Thread(target=do_fetch, daemon=True).start()
@@ -5390,6 +5498,147 @@ class GoldbergDialog(Gtk.Dialog):
         dialog.destroy()
         self.response(Gtk.ResponseType.OK)
         return False
+
+    def _run_on_ui_thread(self, callback):
+        if threading.current_thread() is threading.main_thread():
+            return callback()
+
+        done = threading.Event()
+        out = {}
+
+        def _invoke():
+            try:
+                out["value"] = callback()
+            finally:
+                done.set()
+            return False
+
+        GLib.idle_add(_invoke)
+        done.wait()
+        return out.get("value")
+
+    def _steam_auth_defaults(self):
+        cfg = ConfigManager().config
+        return {
+            "username": cfg.get("default-gse-username", "").strip('"'),
+            "remember_login": cfg.get("gse-remember-login", "True") == "True",
+            "login_skip_app_confirmation": (
+                cfg.get("gse-login-skip-app-confirmation", "False") == "True"
+            ),
+        }
+
+    def _prompt_steam_login(self):
+        defaults = self._steam_auth_defaults()
+
+        def _show_dialog():
+            dlg = Gtk.Dialog(
+                title=_("Steam Login"),
+                parent=self,
+                modal=True,
+            )
+            dlg.set_default_size(460, -1)
+            dlg.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
+            dlg.add_button(_("Ok"), Gtk.ResponseType.OK)
+
+            area = dlg.get_content_area()
+            area.set_spacing(8)
+            area.set_margin_start(12)
+            area.set_margin_end(12)
+            area.set_margin_top(12)
+            area.set_margin_bottom(12)
+
+            hint = Gtk.Label(
+                label=_(
+                    'Enter "qr" as username to try Steam app QR login. Password can be empty for QR.'
+                )
+            )
+            hint.set_line_wrap(True)
+            hint.set_halign(Gtk.Align.START)
+
+            user_label = Gtk.Label(label=_("Username"))
+            user_label.set_halign(Gtk.Align.START)
+            user_entry = Gtk.Entry()
+            user_entry.set_text(defaults["username"])
+
+            pass_label = Gtk.Label(label=_("Password"))
+            pass_label.set_halign(Gtk.Align.START)
+            pass_entry = Gtk.Entry()
+            pass_entry.set_visibility(False)
+            pass_entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+
+            remember = Gtk.CheckButton(label=_("Remember login token"))
+            remember.set_active(defaults["remember_login"])
+
+            skip_confirm = Gtk.CheckButton(
+                label=_("Prefer code entry over app confirmation")
+            )
+            skip_confirm.set_active(defaults["login_skip_app_confirmation"])
+
+            area.pack_start(hint, False, False, 0)
+            area.pack_start(user_label, False, False, 0)
+            area.pack_start(user_entry, False, False, 0)
+            area.pack_start(pass_label, False, False, 0)
+            area.pack_start(pass_entry, False, False, 0)
+            area.pack_start(remember, False, False, 0)
+            area.pack_start(skip_confirm, False, False, 0)
+
+            dlg.show_all()
+            response = dlg.run()
+            if response != Gtk.ResponseType.OK:
+                dlg.destroy()
+                return None
+
+            result = {
+                "username": user_entry.get_text().strip(),
+                "password": pass_entry.get_text(),
+                "remember_login": remember.get_active(),
+                "login_skip_app_confirmation": skip_confirm.get_active(),
+            }
+            dlg.destroy()
+            cfg = ConfigManager()
+            cfg.set_value("gse-remember-login", result["remember_login"])
+            cfg.set_value(
+                "gse-login-skip-app-confirmation",
+                result["login_skip_app_confirmation"],
+            )
+            cfg.save_config()
+            return result
+
+        return self._run_on_ui_thread(_show_dialog)
+
+    def _prompt_steam_twofa_code(self, prompt):
+        def _show_dialog():
+            dlg = Gtk.Dialog(
+                title=_("Steam Guard"),
+                parent=self,
+                modal=True,
+            )
+            dlg.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
+            dlg.add_button(_("Ok"), Gtk.ResponseType.OK)
+
+            area = dlg.get_content_area()
+            area.set_spacing(8)
+            area.set_margin_start(12)
+            area.set_margin_end(12)
+            area.set_margin_top(12)
+            area.set_margin_bottom(12)
+
+            label = Gtk.Label(label=prompt or _("Enter your Steam Guard code"))
+            label.set_line_wrap(True)
+            label.set_halign(Gtk.Align.START)
+            code_entry = Gtk.Entry()
+            code_entry.set_placeholder_text(_("2FA code"))
+
+            area.pack_start(label, False, False, 0)
+            area.pack_start(code_entry, False, False, 0)
+
+            dlg.show_all()
+            response = dlg.run()
+            code = code_entry.get_text().strip() if response == Gtk.ResponseType.OK else None
+            dlg.destroy()
+            return code or None
+
+        return self._run_on_ui_thread(_show_dialog)
 
 
 class AddGame(Gtk.Dialog, HiDpiMixin):
