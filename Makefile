@@ -11,7 +11,7 @@ dev:
 	python3 -m faugus.launcher
 
 watch:
-	find faugus -name "*.py" | entr -r make dev
+	uvx watchfiles "/usr/bin/python3 -m faugus.launcher" faugus
 
 install:
 	meson setup builddir --prefix=/usr/local
