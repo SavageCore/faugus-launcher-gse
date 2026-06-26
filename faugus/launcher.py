@@ -5866,11 +5866,11 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.label_save_path.set_halign(Gtk.Align.START)
         self.entry_save_path = Gtk.Entry()
         self.entry_save_path.connect(
-            "changed", self.on_entry_changed, self.entry_save_path
+            "changed", on_entry_changed, self.entry_save_path
         )
         self.entry_save_path.set_tooltip_text(_("/path/to/the/save/data"))
         self.entry_save_path.set_has_tooltip(True)
-        self.entry_save_path.connect("query-tooltip", self.on_entry_query_tooltip)
+        self.entry_save_path.connect("query-tooltip", on_entry_query_tooltip)
         self.button_lookup_save_path = Gtk.Button(label=_("Lookup"))
         self.button_lookup_save_path.set_tooltip_text(
             _("Try to find the save location on PCGamingWiki using the configured Steam AppID")
