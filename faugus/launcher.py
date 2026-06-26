@@ -2677,7 +2677,8 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
             edit_game_dialog.entry_path.set_text(game.path)
             edit_game_dialog.entry_prefix.set_text(game.prefix)
             edit_game_dialog.entry_save_path.set_text(game.save_path)
-            edit_game_dialog.entry_launch_arguments.set_text(game.launch_arguments)
+            edit_game_dialog.launch_arguments = game.launch_arguments
+            edit_game_dialog.checkbox_goldberg.set_active(bool(game.gse_enabled))
             edit_game_dialog.entry_game_arguments.set_text(game.game_arguments)
             edit_game_dialog.set_title(_("Edit %s") % game.title)
             edit_game_dialog.entry_protonfix.set_text(game.protonfix)
@@ -3331,7 +3332,8 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
             game.prefix = os.path.normpath(edit_game_dialog.entry_prefix.get_text())
             save_path_text = edit_game_dialog.entry_save_path.get_text().strip()
             game.save_path = os.path.normpath(save_path_text) if save_path_text else ""
-            game.launch_arguments = edit_game_dialog.entry_launch_arguments.get_text()
+            game.launch_arguments = edit_game_dialog.launch_arguments
+            game.gse_enabled = edit_game_dialog.checkbox_goldberg.get_active()
             game.game_arguments = edit_game_dialog.entry_game_arguments.get_text()
             game.mangohud = edit_game_dialog.checkbox_mangohud.get_active()
             game.gamemode = edit_game_dialog.checkbox_gamemode.get_active()
@@ -5924,6 +5926,17 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.checkbox_disable_hidraw = Gtk.CheckButton(label=_("Disable Hidraw"))
         self.checkbox_prevent_sleep = Gtk.CheckButton(label=_("Prevent Sleep"))
 
+        self.checkbox_goldberg = Gtk.CheckButton(
+            label=_("Goldberg Emulator")
+        )
+        self.checkbox_goldberg.set_tooltip_text(
+            _("Replace steam_api.dll with Goldberg Emulator for offline/LAN play.")
+        )
+        self.button_goldberg = Gtk.Button(label=_("Goldberg Settings"))
+        self.button_goldberg.set_size_request(120, -1)
+        self.button_goldberg.connect("clicked", self.on_button_goldberg_clicked)
+        self.connect("show", self._refresh_goldberg_sensitivity)
+
         self.button_winecfg = Gtk.Button(label="Winecfg")
         self.button_winecfg.set_size_request(120, -1)
         self.button_winecfg.connect("clicked", self.on_button_winecfg_clicked)
@@ -6134,6 +6147,9 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.checkbox_prevent_sleep.set_hexpand(True)
         self.grid_tools.attach(self.checkbox_disable_hidraw, 0, 3, 1, 1)
         self.checkbox_disable_hidraw.set_hexpand(True)
+        self.grid_tools.attach(self.checkbox_goldberg, 0, 4, 1, 1)
+        self.checkbox_goldberg.set_hexpand(True)
+        self.grid_tools.attach(self.button_goldberg, 2, 4, 1, 1)
         self.grid_tools.attach(box_buttons, 2, 0, 1, 4)
 
         page2.add(self.grid_protonfix)
@@ -6676,6 +6692,42 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         title_formatted = format_title(entry.get_text())
         prefix = os.path.expanduser(self.default_prefix) + "/" + title_formatted
         self.entry_prefix.set_text(prefix)
+
+    def _refresh_goldberg_sensitivity(self, *args):
+        installed = gse.is_any_fork_installed()
+        self.checkbox_goldberg.set_sensitive(installed)
+        self.button_goldberg.set_sensitive(installed)
+        if installed:
+            self.checkbox_goldberg.set_tooltip_text(
+                _("Replace steam_api.dll with Goldberg Emulator for offline/LAN play.")
+            )
+        else:
+            self.checkbox_goldberg.set_tooltip_text(
+                _(
+                    "Goldberg Emulator binaries are downloading, please try again shortly."
+                )
+            )
+
+    def on_button_goldberg_clicked(self, widget):
+        title = self.entry_title.get_text().strip()
+        if not title:
+            warning = Gtk.MessageDialog(
+                parent=self,
+                modal=True,
+                message_type=Gtk.MessageType.WARNING,
+                buttons=Gtk.ButtonsType.OK,
+                text=_("Please enter a game title first."),
+            )
+            warning.run()
+            warning.destroy()
+            return
+
+        gameid = format_title(title)
+        dialog = GoldbergDialog(
+            self, gameid, game_title=title, prefix=self.entry_prefix.get_text()
+        )
+        dialog.run()
+        dialog.destroy()
 
     def on_button_winecfg_clicked(self, widget):
         self.set_sensitive(False)
