@@ -154,8 +154,36 @@ def _migrate_games_json_fields():
                 game[new_field] = game.pop(old_field)
                 changed = True
 
+    if _backfill_steam_app_id(games):
+        changed = True
+
     if changed:
         save_json_file(games, GAMES_JSON)
+
+
+def _backfill_steam_app_id(games):
+    """Move Steam AppIDs out of the Goldberg staging dir into the game record.
+
+    The AppID used to live only in <config>/faugus-launcher/gse_fork/<gameid>/
+    steam_settings/steam_appid.txt. It is now a regular game field so it can be
+    edited (and used for save path lookups) without the emulator.
+    """
+    from faugus.gse import get_appid
+
+    changed = False
+    for game in games:
+        if not isinstance(game, dict):
+            continue
+        if game.get("steam_app_id"):
+            continue
+        gameid = game.get("gameid")
+        if not gameid:
+            continue
+        appid = get_appid(gameid)
+        if appid:
+            game["steam_app_id"] = appid
+            changed = True
+    return changed
 
 
 def _migrate_config_json_values():

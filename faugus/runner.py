@@ -771,6 +771,16 @@ class FaugusRun(HiDpiMixin):
                         os.rename(old_path, new_path)
                         break
 
+        gse_gameid = os.environ.get("FAUGUS_GSE_GAME")
+        if gse_gameid:
+            try:
+                from faugus.gse import restore_goldberg
+                game_data = load_game_from_json(gse_gameid)
+                if game_data:
+                    restore_goldberg(game_data)
+            except Exception as e:
+                print(f"[gse] restore failed: {e}")
+
         def finish():
             self.close_splash_window()
             self.close_log_window()
@@ -921,6 +931,14 @@ def main():
         game = load_game_from_json(args.game)
         if not game:
             return
+
+        if game.get("gse_enabled"):
+            try:
+                from faugus.gse import prepare_goldberg
+                prepare_goldberg(game)
+                os.environ["FAUGUS_GSE_GAME"] = game["gameid"]
+            except Exception as e:
+                print(f"[gse] prepare failed: {e}")
 
         launch_options = build_launch_command(game)
         FaugusRun(launch_options, None, game.get("pre_launch", ""), game.get("post_launch", ""), args.game, with_logs=args.logs).run()

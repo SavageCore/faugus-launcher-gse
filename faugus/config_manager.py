@@ -64,6 +64,10 @@ class ConfigManager:
             'sort': 'alpha',
             'category': 'all',
             'steam-user': 'all',
+            'steam-api-key': '',
+            'default-gse-username': '',
+            'gse-remember-login': 'True',
+            'gse-login-skip-app-confirmation': 'False',
         }
 
         self.config = {}

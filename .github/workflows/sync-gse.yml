@@ -1,0 +1,70 @@
+name: Sync gse_fork binaries
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Monday 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch latest gse_fork release
+        id: fetch
+        run: |
+          RELEASE=$(curl -sSf https://api.github.com/repos/alex47exe/gse_fork/releases/latest)
+          VERSION=$(echo "$RELEASE" | jq -r '.tag_name')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          STORED=$(cat gse_fork/version.txt 2>/dev/null || echo "none")
+          if [ "$VERSION" = "$STORED" ]; then
+            echo "No new release ($VERSION), skipping."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          # Pick emu-win-release.7z (the Windows DLL release used under Proton/Wine)
+          ASSET_URL=$(echo "$RELEASE" | jq -r \
+            '[.assets[] | select(.name == "emu-win-release.7z")] | first | .browser_download_url // empty')
+
+          if [ -z "$ASSET_URL" ]; then
+            # Fall back to the first .7z asset
+            ASSET_URL=$(echo "$RELEASE" | jq -r \
+              '[.assets[] | select(.name | endswith(".7z"))] | first | .browser_download_url // empty')
+          fi
+
+          if [ -z "$ASSET_URL" ]; then
+            echo "No .7z asset found in release $VERSION."
+            exit 1
+          fi
+
+          echo "Downloading $ASSET_URL"
+          curl -sSfL "$ASSET_URL" -o /tmp/gse_release.7z
+
+          rm -rf gse_fork/linux
+          mkdir -p gse_fork/linux /tmp/gse_extract
+
+          sudo apt-get install -y p7zip-full -q
+          7z x /tmp/gse_release.7z -o/tmp/gse_extract -y
+
+          # x32/steam_api.dll → steam_api.dll, x64/steam_api64.dll → steam_api64.dll
+          find /tmp/gse_extract -name "steam_api.dll"   -path "*/x32/*" -exec cp -v {} gse_fork/linux/steam_api.dll \;
+          find /tmp/gse_extract -name "steam_api64.dll" -path "*/x64/*" -exec cp -v {} gse_fork/linux/steam_api64.dll \;
+
+          echo "$VERSION" > gse_fork/version.txt
+
+      - name: Commit and push if changed
+        if: steps.fetch.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add gse_fork/
+          git diff --staged --quiet && echo "Nothing to commit." || \
+            git commit -m "chore: sync gse_fork to ${{ steps.fetch.outputs.version }}"
+          git push

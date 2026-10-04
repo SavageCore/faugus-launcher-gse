@@ -1349,6 +1349,7 @@ GAME_FIELDS = [
     "playtime", "hidden", "no_sleep", "category", "icon",
     "steamgriddb_id", "pre_launch", "post_launch",
     "steam_user", "disable_umu", "runtime", "last_played",
+    "gse_enabled", "save_path", "steam_app_id",
 ]
 
 
@@ -1371,7 +1372,8 @@ def game_to_save_dict(game, hidden=None):
 def prepare_game_kwargs(data):
     defaults = {f: "" for f in GAME_FIELDS}
     defaults.update({"playtime": 0, "hidden": False, "no_sleep": False,
-                     "category": False})
+                     "category": False, "gse_enabled": False, "save_path": "",
+                     "steam_app_id": ""})
     return {f: data.get(f, defaults[f]) for f in GAME_FIELDS}
 
 

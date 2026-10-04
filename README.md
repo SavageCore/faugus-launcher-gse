@@ -74,6 +74,11 @@ sudo ninja install
 ```
 meson ninja pygobject requests pillow vdf psutil dbus-python icoextract gtk4 libadwaita libmanette
 ```
+### Running without installing
+From the project root:
+```
+python3 -m faugus.launcher
+```
 
 # Usage
 [![YouTube](http://i.ytimg.com/vi/Ay6C2f55Pc8/hqdefault.jpg)](https://www.youtube.com/watch?v=Ay6C2f55Pc8)

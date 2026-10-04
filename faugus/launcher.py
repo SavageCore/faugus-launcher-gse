@@ -23,7 +23,10 @@ from faugus.migration import fix_legacy_shortcut_icons
 from faugus.main_screen_nav import adjust_widget_value, carrousel_move_coalesced, focus_bottom_bar_by_column, focus_flowbox_child, focus_top_bar, navigate_focus
 from faugus.tray_only import spawn as tray_only_spawn
 
+import faugus.gse as gse
+
 VERSION = "2.4.2"
+APP_TITLE = "Faugus (GSE)"
 
 GLib.set_prgname(APP_ID if IS_FLATPAK else "faugus-launcher")
 
@@ -105,17 +108,19 @@ class FaugusApp(Gtk.Application):
 
 class Main(Gtk.ApplicationWindow, HiDpiMixin):
     def __init__(self, app):
-        super().__init__(application=app, title="Faugus")
+        super().__init__(application=app, title=APP_TITLE)
         apply_titlebar_preference(self)
         self.add_css_class("main-window")
         self.connect("close-request", self.on_close)
-        print(f"Faugus {VERSION}")
+        print(f"{APP_TITLE} {VERSION}")
 
         self.fullscreen_activated = False
         self.system_tray = False
         self.mono_icon = False
 
         self.current_prefix = None
+        self.current_save_path = None
+        self.current_achievements_path = None
         self.games = []
 
         self.processes = {}
@@ -317,7 +322,23 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
         self.action_context_show_logs.connect("activate", self.on_context_show_logs)
         self.add_action(self.action_context_show_logs)
 
+        self.action_context_export = Gio.SimpleAction.new("context-export", GLib.VariantType.new("s"))
+        self.action_context_export.connect("activate", self.on_context_menu_export)
+        self.add_action(self.action_context_export)
+
+        self.action_context_save_path = Gio.SimpleAction.new("context-save-path", None)
+        self.action_context_save_path.connect("activate", self.on_context_menu_open_save_dir)
+        self.add_action(self.action_context_save_path)
+
+        self.action_context_achievements = Gio.SimpleAction.new("context-achievements", None)
+        self.action_context_achievements.connect("activate", self.on_context_menu_open_achievements)
+        self.add_action(self.action_context_achievements)
+
         self.load_config()
+
+        threading.Thread(target=gse.update_gse, daemon=True).start()
+        threading.Thread(target=lambda: gse.update_gse("gbe_fork"), daemon=True).start()
+        threading.Thread(target=gse.update_tools, daemon=True).start()
 
         if app.console_mode:
             self.interface_mode = "Carrousel"
@@ -2680,7 +2701,7 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
             pass
 
     def show_power_menu(self, widget):
-        dialog = Gtk.Dialog(title="Faugus", transient_for=self)
+        dialog = Gtk.Dialog(title=APP_TITLE, transient_for=self)
         apply_titlebar_preference(dialog)
         hide_dialog_action_area(dialog)
         dialog.set_modal(True)
@@ -2842,6 +2863,30 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
         self.action_context_game_location.set_enabled(self.current_game is not None)
         self.action_context_prefix_location.set_enabled(self.current_prefix is not None)
 
+        show_gse_entries = game.runner not in ("Steam", "Linux-Native")
+        gse_game_prefix = expand_path(game.prefix) if game.runner != "Steam" else ""
+
+        save_path = expand_path(game.save_path) if game.save_path else ""
+        self.current_save_path = save_path if os.path.isdir(save_path) else None
+        self.action_context_save_path.set_enabled(self.current_save_path is not None)
+
+        achievements_path = None
+        if show_gse_entries and game.gse_enabled and gse_game_prefix:
+            achievements_base = os.path.join(
+                gse_game_prefix, "drive_c", "users", "steamuser",
+                "AppData", "Roaming", "GSE Saves",
+            )
+            appid = (getattr(game, "steam_app_id", "") or "").strip()
+            achievements_path = (
+                os.path.join(achievements_base, appid)
+                if appid and os.path.isdir(os.path.join(achievements_base, appid))
+                else achievements_base
+            )
+            if not os.path.isdir(achievements_path):
+                achievements_path = None
+        self.current_achievements_path = achievements_path
+        self.action_context_achievements.set_enabled(achievements_path is not None)
+
         root = Gio.Menu()
 
         header_section = Gio.Menu()
@@ -2868,6 +2913,26 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
 
         if supports_logs:
             actions_section.append(_("Show logs"), "win.context-show-logs")
+
+        if show_gse_entries and save_path:
+            actions_section.append(_("Open save directory"), "win.context-save-path")
+
+        if achievements_path:
+            actions_section.append(
+                _("Open achievements directory"), "win.context-achievements"
+            )
+
+        if show_gse_entries:
+            export_menu = Gio.Menu()
+            for label, fork in (("GSE Fork", "gse_fork"), ("GBE Fork", "gbe_fork")):
+                item = Gio.MenuItem.new(label, None)
+                item.set_action_and_target_value(
+                    "win.context-export", GLib.Variant.new_string(fork)
+                )
+                if not (gse._fork_binary_dir(fork) / "regular").is_dir():
+                    item.set_attribute_value("enabled", GLib.Variant.new_boolean(False))
+                export_menu.append_item(item)
+            actions_section.append_submenu(_("Export"), export_menu)
 
         root.append_section(None, actions_section)
 
@@ -3394,6 +3459,86 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
     def on_context_menu_prefix_location(self, action, param):
         self.context_menu.popdown()
         subprocess.Popen(["xdg-open", self.current_prefix])
+
+    def on_context_menu_open_save_dir(self, action, param):
+        self.context_menu.popdown()
+        if self.current_save_path:
+            subprocess.Popen(["xdg-open", self.current_save_path])
+
+    def on_context_menu_open_achievements(self, action, param):
+        self.context_menu.popdown()
+        if self.current_achievements_path:
+            subprocess.Popen(["xdg-open", self.current_achievements_path])
+
+    def on_context_menu_export(self, action, param):
+        self.context_menu.popdown()
+        game = self.selected()
+        if not game:
+            return
+
+        fork = param.get_string() if param is not None else "gse_fork"
+
+        filechooser = new_file_chooser(
+            self,
+            _("Choose export destination"),
+            Gtk.FileChooserAction.SELECT_FOLDER,
+            accept_label=_("Export here"),
+        )
+        set_file_chooser_start_folder(filechooser, "export_destination")
+
+        def on_response(dialog_fc, response):
+            if response != Gtk.ResponseType.ACCEPT:
+                destroy_and_release(dialog_fc)
+                return
+
+            destination = Path(dialog_fc.get_file().get_path())
+            destroy_and_release(dialog_fc)
+            export_dir = destination / Path(os.path.dirname(expand_path(game.path))).name
+
+            def start_export():
+                fork_label = "GSE" if fork == "gse_fork" else "GBE"
+
+                progress_dialog = Gtk.Dialog(title=_("Exporting…"), transient_for=self)
+                hide_dialog_action_area(progress_dialog)
+                progress_dialog.set_modal(True)
+                progress_dialog.set_resizable(False)
+                progress_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+                progress_box.set_margin_start(20)
+                progress_box.set_margin_end(20)
+                progress_box.set_margin_top(20)
+                progress_box.set_margin_bottom(20)
+                progress_box.append(Gtk.Label(label=_("Copying game files, please wait.")))
+                progress_dialog.get_content_area().append(progress_box)
+                progress_dialog.present()
+
+                def do_export():
+                    ok, msg = gse.export_game(game.path, game.gameid, fork, destination)
+                    GLib.idle_add(finish, ok, msg)
+
+                def finish(ok, msg):
+                    destroy_and_release(progress_dialog)
+                    if ok:
+                        show_message_dialog(_("{} export complete").format(fork_label), msg, parent=self)
+                    else:
+                        show_message_dialog(_("Export failed"), msg, parent=self)
+                    return False
+
+                threading.Thread(target=do_export, daemon=True).start()
+
+            if export_dir.exists():
+                show_message_dialog(
+                    _("Export already exists"),
+                    _("{} already exists. Delete it and re-export?").format(export_dir),
+                    parent=self,
+                    confirm_label=_("Delete and re-export"),
+                    cancel_label=_("Cancel"),
+                    callback=lambda confirmed: (shutil.rmtree(str(export_dir)), start_export()) if confirmed else None,
+                )
+            else:
+                start_export()
+
+        filechooser.connect("response", on_response)
+        filechooser.present()
 
     def run_file_in_prefix(self, game, file_run):
         prefix = expand_path(game.prefix)
@@ -4422,6 +4567,9 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
         edit_game_dialog._steamgriddb_steam_appid = game.path if game_runner == "Steam" else None
         edit_game_dialog.entry_path.set_text(game.path)
         edit_game_dialog.entry_prefix.set_text(game.prefix)
+        edit_game_dialog.entry_steam_app_id.set_text(game.steam_app_id)
+        edit_game_dialog.entry_save_path.set_text(game.save_path)
+        edit_game_dialog.checkbox_goldberg.set_active(bool(game.gse_enabled))
         edit_game_dialog.launch_arguments = game.launch_arguments
         edit_game_dialog.pre_launch = game.pre_launch
         edit_game_dialog.post_launch = game.post_launch
@@ -4750,6 +4898,10 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
                 pre_launch=add_game_dialog.pre_launch,
                 post_launch=add_game_dialog.post_launch,
                 steam_user=add_game_dialog.combobox_steam_user.get_active_id() if launcher_id == "steam" else "",
+                gse_enabled=add_game_dialog.checkbox_goldberg.get_active(),
+                save_path=os.path.normpath(add_game_dialog.entry_save_path.get_text().strip())
+                if add_game_dialog.entry_save_path.get_text().strip() else "",
+                steam_app_id=add_game_dialog.entry_steam_app_id.get_text().strip(),
                 disable_umu=disable_umu,
                 runtime=add_game_dialog.combobox_runtime.get_active_id()
             )
@@ -5063,6 +5215,10 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
             game.lossless_present = edit_game_dialog.lossless_present
             game.no_sleep = edit_game_dialog.checkbox_no_sleep.get_active()
             game.steamgriddb_id = edit_game_dialog._steamgriddb_suggestion_id or ""
+            game.gse_enabled = edit_game_dialog.checkbox_goldberg.get_active()
+            save_path_text = edit_game_dialog.entry_save_path.get_text().strip()
+            game.save_path = os.path.normpath(save_path_text) if save_path_text else ""
+            game.steam_app_id = edit_game_dialog.entry_steam_app_id.get_text().strip()
 
             game.addapp_bat = f"{os.path.dirname(expand_path(game.path))}/faugus-{game.gameid}.bat"
 
@@ -5652,6 +5808,38 @@ class Settings(Gtk.Dialog):
         self.button_steamgriddb_key.connect("clicked", self.on_button_steamgriddb_key_clicked)
         self.button_steamgriddb_key.set_size_request(50, -1)
 
+        self.label_gse_settings = Gtk.Label(label=_("Goldberg Emulator"))
+        self.label_gse_settings.set_halign(Gtk.Align.START)
+
+        self.label_steam_api_key = Gtk.Label(label=_("Steam Web API Key"))
+        self.label_steam_api_key.set_halign(Gtk.Align.START)
+        self.entry_steam_api_key = Gtk.Entry()
+        self.entry_steam_api_key.set_tooltip_text(
+            _("Used to fetch achievements. Get one at store.steampowered.com/dev/apikey")
+        )
+        self.entry_steam_api_key.set_has_tooltip(True)
+        self.entry_steam_api_key.set_visibility(False)
+        self.entry_steam_api_key.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+
+        self.label_gse_username = Gtk.Label(label=_("Default Username"))
+        self.label_gse_username.set_halign(Gtk.Align.START)
+        self.entry_gse_username = Gtk.Entry()
+        self.entry_gse_username.set_tooltip_text(
+            _("Default player name for all games (can be overridden per game in Goldberg Settings)")
+        )
+        self.entry_gse_username.set_has_tooltip(True)
+
+        self.checkbox_gse_remember_login = Gtk.CheckButton(label=_("Remember Steam login token"))
+        self.checkbox_gse_remember_login.set_tooltip_text(
+            _("Store a refresh token for gse_tools so future Steam fetches can log in automatically.")
+        )
+        self.checkbox_gse_skip_app_confirmation = Gtk.CheckButton(
+            label=_("Prefer code entry over app confirmation")
+        )
+        self.checkbox_gse_skip_app_confirmation.set_tooltip_text(
+            _("Try code-based Steam Guard flow instead of waiting for Steam Mobile app confirmation.")
+        )
+
         self.label_default_prefix = Gtk.Label(label=_("Default Prefixes Location"))
         self.label_default_prefix.set_halign(Gtk.Align.START)
 
@@ -5876,6 +6064,8 @@ class Settings(Gtk.Dialog):
 
         grid_support = build_grid(column_homogeneous=True)
         grid_support.set_vexpand(True)
+
+        grid_goldberg = build_grid()
         grid_support.set_valign(Gtk.Align.END)
 
         grid_backup = build_grid(column_homogeneous=True)
@@ -5996,6 +6186,16 @@ class Settings(Gtk.Dialog):
         grid_support.attach(button_kofi, 0, 1, 1, 1)
         grid_support.attach(button_paypal, 1, 1, 1, 1)
 
+        grid_goldberg.attach(self.label_gse_settings, 0, 0, 1, 1)
+        grid_goldberg.attach(self.label_steam_api_key, 0, 1, 1, 1)
+        grid_goldberg.attach(self.entry_steam_api_key, 0, 2, 1, 1)
+        grid_goldberg.attach(self.label_gse_username, 0, 3, 1, 1)
+        grid_goldberg.attach(self.entry_gse_username, 0, 4, 1, 1)
+        grid_goldberg.attach(self.checkbox_gse_remember_login, 0, 5, 1, 1)
+        grid_goldberg.attach(self.checkbox_gse_skip_app_confirmation, 0, 6, 1, 1)
+        self.entry_steam_api_key.set_hexpand(True)
+        self.entry_gse_username.set_hexpand(True)
+
         box_general_col1.append(grid_prefix)
         box_general_col1.append(grid_runner)
         box_general_col1.append(self.label_default_prefix_tools)
@@ -6075,6 +6275,7 @@ class Settings(Gtk.Dialog):
 
         box_outside_col1.append(grid_language)
         box_outside_col2.append(grid_support)
+        box_outside_col2.append(grid_goldberg)
         box_outside_col3.append(grid_backup)
 
         grid_outside_tabs.attach(box_outside_col1, 0, 0, 1, 1)
@@ -6342,6 +6543,10 @@ class Settings(Gtk.Dialog):
         config.set_value("grid-orientation", self.combobox_grid_orientation.get_active_id())
         config.set_value("grid-max-children-per-line", int(self.entry_grid_max_children.get_value()))
         config.set_value("steamgriddb-api-key", self.entry_steamgriddb_key.get_text().strip())
+        config.set_value("steam-api-key", self.entry_steam_api_key.get_text().strip())
+        config.set_value("default-gse-username", self.entry_gse_username.get_text().strip())
+        config.set_value("gse-remember-login", self.checkbox_gse_remember_login.get_active())
+        config.set_value("gse-login-skip-app-confirmation", self.checkbox_gse_skip_app_confirmation.get_active())
         config.set_value("startup-window-size", self.combobox_startup_window_size.get_active_id())
         config.set_value("interface-theme", self.interface_theme)
         config.set_value("accent-mode", self.combobox_accent.get_active_id())
@@ -6656,6 +6861,10 @@ class Settings(Gtk.Dialog):
         background_color = cfg.config.get('background-color', 'rgb(61,174,233)').strip('"')
         overview_color = cfg.config.get('overview-color', 'rgb(61,174,233)').strip('"')
         steamgriddb_api_key = cfg.config.get('steamgriddb-api-key', '').strip('"')
+        steam_api_key = cfg.config.get('steam-api-key', '').strip('"')
+        default_gse_username = cfg.config.get('default-gse-username', '').strip('"')
+        gse_remember_login = cfg.config.get('gse-remember-login', 'True') == 'True'
+        gse_skip_app_confirmation = cfg.config.get('gse-login-skip-app-confirmation', 'False') == 'True'
         language = cfg.config.get('language', '')
         startup_window_size = cfg.config.get('startup-window-size', '')
         grid_position = cfg.config.get('grid-position', 'Middle').strip('"')
@@ -6678,6 +6887,10 @@ class Settings(Gtk.Dialog):
         if not self.combobox_runner.set_active_id(default_runner):
             self.combobox_runner.set_active(0)
         self.entry_steamgriddb_key.set_text(steamgriddb_api_key)
+        self.entry_steam_api_key.set_text(steam_api_key)
+        self.entry_gse_username.set_text(default_gse_username)
+        self.checkbox_gse_remember_login.set_active(gse_remember_login)
+        self.checkbox_gse_skip_app_confirmation.set_active(gse_skip_app_confirmation)
         self.combobox_interface.set_active_id(interface_mode)
         self.set_button_color(self.background_color_button, background_color)
         self.set_button_color(self.overview_color_button, overview_color)
@@ -6776,6 +6989,9 @@ class Game:
         disable_umu="",
         runtime="",
         last_played="",
+        gse_enabled=False,
+        save_path="",
+        steam_app_id="",
     ):
         self.gameid = gameid
         self.title = title
@@ -6812,6 +7028,466 @@ class Game:
         self.steam_user = steam_user
         self.disable_umu = disable_umu
         self.last_played = last_played
+        self.gse_enabled = gse_enabled
+        self.save_path = save_path
+        self.steam_app_id = steam_app_id
+
+
+class GoldbergDialog(Gtk.Dialog):
+    def __init__(self, parent, gameid, game_title="", prefix="", appid=""):
+        super().__init__(title=_("Goldberg Emulator Settings"), transient_for=parent)
+        apply_titlebar_preference(self)
+        hide_dialog_action_area(self)
+        self.set_modal(True)
+        self.set_resizable(True)
+        self.set_default_size(460, -1)
+        self.gameid = gameid
+        self.game_title = game_title
+        self.prefix = prefix
+        self.appid = (appid or "").strip()
+
+        notebook = Gtk.Notebook()
+        notebook.set_margin_start(10)
+        notebook.set_margin_end(10)
+        notebook.set_margin_top(10)
+
+        # --- Tab 1: Basic ---
+        grid_basic = build_grid()
+
+        def make_label(text):
+            lbl = Gtk.Label(label=text)
+            lbl.set_halign(Gtk.Align.START)
+            return lbl
+
+        grid_basic.attach(make_label(_("Username")), 0, 0, 1, 1)
+        self.entry_username = Gtk.Entry()
+        self.entry_username.set_hexpand(True)
+        grid_basic.attach(self.entry_username, 1, 0, 1, 1)
+
+        grid_basic.attach(make_label(_("Persona Name")), 0, 1, 1, 1)
+        self.entry_persona = Gtk.Entry()
+        self.entry_persona.set_hexpand(True)
+        grid_basic.attach(self.entry_persona, 1, 1, 1, 1)
+
+        grid_basic.attach(make_label(_("Language")), 0, 2, 1, 1)
+        self.combo_language = IdComboBox()
+        for lang_code in gse.LANGUAGES:
+            self.combo_language.append(lang_code, lang_code)
+        self.combo_language.set_hexpand(True)
+        grid_basic.attach(self.combo_language, 1, 2, 1, 1)
+
+        grid_basic.attach(make_label(_("Custom SteamID")), 0, 3, 1, 1)
+        self.entry_steamid = Gtk.Entry()
+        self.entry_steamid.set_hexpand(True)
+        self.entry_steamid.set_placeholder_text(_("leave blank for random"))
+        grid_basic.attach(self.entry_steamid, 1, 3, 1, 1)
+
+        grid_basic.attach(make_label(_("DLL Path")), 0, 4, 1, 1)
+        dll_path_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.entry_dll_path = Gtk.Entry()
+        self.entry_dll_path.set_hexpand(True)
+        self.entry_dll_path.set_placeholder_text(_("leave blank for auto-detect"))
+        self.entry_dll_path.set_tooltip_text(
+            _("Path to steam_api64.dll / steam_api.dll. Leave blank to auto-detect.")
+        )
+        self.button_browse_dll = Gtk.Button(label=_("Browse…"))
+        self.button_browse_dll.set_tooltip_text(_("Browse to the Steam API DLL"))
+        self.button_browse_dll.connect("clicked", self._on_browse_dll)
+        dll_path_box.append(self.entry_dll_path)
+        dll_path_box.append(self.button_browse_dll)
+        grid_basic.attach(dll_path_box, 1, 4, 1, 1)
+
+        grid_basic.attach(make_label(_("Fork")), 0, 5, 1, 1)
+        self.combo_fork = IdComboBox()
+        self.combo_fork.append("gse_fork", "gse_fork")
+        self.combo_fork.append("gbe_fork", "gbe_fork")
+        self.combo_fork.set_hexpand(True)
+        self.combo_fork.set_tooltip_text(
+            _("Which Goldberg Emulator fork to use.\n\n"
+              "gse_fork (alex47exe): improved fork of gbe_fork.\n"
+              "gbe_fork (Detanup01): the original fork.")
+        )
+        grid_basic.attach(self.combo_fork, 1, 5, 1, 1)
+
+        grid_basic.attach(make_label(_("Variant")), 0, 6, 1, 1)
+        self.combo_variant = IdComboBox()
+        self.combo_variant.append("regular", "regular")
+        self.combo_variant.append("experimental", "experimental")
+        self.combo_variant.set_hexpand(True)
+        self.combo_variant.set_tooltip_text(
+            _("Which build of the emulator to deploy.\n\n"
+              "regular: stable build, recommended for most games.\n"
+              "experimental: bleeding-edge build with untested features; may improve overlay support.")
+        )
+        grid_basic.attach(self.combo_variant, 1, 6, 1, 1)
+
+        self.check_offline = Gtk.CheckButton(label=_("Offline Mode"))
+        self.check_offline.set_tooltip_text(_("Disable all Steam network activity."))
+        grid_basic.attach(self.check_offline, 0, 7, 2, 1)
+
+        self.check_no_net = Gtk.CheckButton(label=_("Disable Networking"))
+        self.check_no_net.set_tooltip_text(_("Disable LAN / matchmaking networking."))
+        grid_basic.attach(self.check_no_net, 0, 8, 2, 1)
+
+        self.check_fetch_ach = Gtk.CheckButton(label=_("Fetch achievements from Steam"))
+        self.check_fetch_ach.set_tooltip_text(
+            _("Automatically download achievements and stats from Steam when saving.")
+        )
+        grid_basic.attach(self.check_fetch_ach, 0, 9, 2, 1)
+
+        notebook.append_page(grid_basic, Gtk.Label(label=_("Basic")))
+
+        # --- Tab 2: Advanced / Overlay ---
+        grid_adv = build_grid()
+
+        self.check_unlock_dlc = Gtk.CheckButton(label=_("Unlock All DLC"))
+        self.check_unlock_dlc.set_tooltip_text(
+            _("Make all DLC appear as owned, even if not purchased.")
+        )
+        grid_adv.attach(self.check_unlock_dlc, 0, 0, 1, 1)
+
+        self.check_unknown_stats = Gtk.CheckButton(label=_("Allow Unknown Stats"))
+        self.check_unknown_stats.set_tooltip_text(
+            _("Allow stats that aren't defined in the game's schema to be set and retrieved.")
+        )
+        grid_adv.attach(self.check_unknown_stats, 0, 1, 1, 1)
+
+        self.check_unknown_ach = Gtk.CheckButton(label=_("Allow Unknown Achievements"))
+        self.check_unknown_ach.set_tooltip_text(
+            _("Allow achievements not defined in the game's schema to be unlocked.")
+        )
+        grid_adv.attach(self.check_unknown_ach, 0, 2, 1, 1)
+
+        self.check_leaderboards = Gtk.CheckButton(label=_("Auto-create Leaderboards"))
+        self.check_leaderboards.set_tooltip_text(
+            _("Automatically create leaderboards when a game requests one that doesn't exist yet.")
+        )
+        grid_adv.attach(self.check_leaderboards, 0, 3, 1, 1)
+
+        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        sep.set_margin_top(4)
+        sep.set_margin_bottom(4)
+        grid_adv.attach(sep, 0, 4, 1, 1)
+
+        self.check_overlay_exp = Gtk.CheckButton(label=_("Overlay (Experimental)"))
+        self.check_overlay_exp.set_tooltip_text(
+            _("Enable the experimental Steam overlay.")
+        )
+        self.check_overlay_exp.connect("toggled", self._on_overlay_exp_toggled)
+        grid_adv.attach(self.check_overlay_exp, 0, 5, 1, 1)
+
+        self.check_overlay_ach = Gtk.CheckButton(
+            label=_("Show Achievement Notifications")
+        )
+        self.check_overlay_ach.set_tooltip_text(
+            _("Show an overlay popup when an achievement is unlocked.")
+        )
+        grid_adv.attach(self.check_overlay_ach, 0, 6, 1, 1)
+
+        self.check_overlay_ach_progress = Gtk.CheckButton(
+            label=_("Show Achievement Progress Notifications")
+        )
+        self.check_overlay_ach_progress.set_tooltip_text(
+            _("Show an overlay popup for achievement progress updates (e.g. 50/100 kills).")
+        )
+        grid_adv.attach(self.check_overlay_ach_progress, 0, 7, 1, 1)
+
+        self.check_overlay_friends = Gtk.CheckButton(
+            label=_("Show Friend Notifications")
+        )
+        self.check_overlay_friends.set_tooltip_text(
+            _("Show overlay notifications for friend invitations and messages.")
+        )
+        grid_adv.attach(self.check_overlay_friends, 0, 8, 1, 1)
+
+        notebook.append_page(grid_adv, Gtk.Label(label=_("Advanced")))
+
+        # Buttons
+        button_cancel = Gtk.Button(label=_("Cancel"))
+        button_cancel.set_hexpand(True)
+        button_cancel.connect("clicked", lambda b: self.response(Gtk.ResponseType.CANCEL))
+
+        self.btn_ok = Gtk.Button(label=_("Ok"))
+        self.btn_ok.set_hexpand(True)
+        self.btn_ok.connect("clicked", lambda b: self._save_and_respond())
+
+        bottom_box = build_bottom_button_box(button_cancel, self.btn_ok)
+
+        content_area = self.get_content_area()
+        content_area.append(notebook)
+        content_area.append(bottom_box)
+
+        self._load()
+        self.present()
+
+    def _load(self):
+        cfg = gse.read_config(self.gameid)
+        username = cfg.get("username", "")
+        if not username or username == gse._DEFAULTS["username"]:
+            global_username = ConfigManager().config.get("default-gse-username", "").strip('"')
+            if global_username:
+                username = global_username
+                cfg["persona_name"] = global_username
+        self.entry_username.set_text(username or cfg.get("username", "Player"))
+        self.entry_persona.set_text(cfg.get("persona_name", "Player"))
+        lang = cfg.get("language", "english")
+        if not self.combo_language.set_active_id(lang):
+            self.combo_language.set_active(0)
+        self.entry_steamid.set_text(cfg.get("steamid", ""))
+        self.entry_dll_path.set_text(cfg.get("dll_path", ""))
+        if not self.combo_fork.set_active_id(cfg.get("gse_fork_variant", "gse_fork")):
+            self.combo_fork.set_active(0)
+        if not self.combo_variant.set_active_id(cfg.get("fork_variant", "regular")):
+            self.combo_variant.set_active(0)
+        self.check_offline.set_active(cfg.get("offline", False))
+        self.check_no_net.set_active(cfg.get("disable_networking", False))
+        self.check_fetch_ach.set_active(cfg.get("fetch_achievements", True))
+        self.check_unlock_dlc.set_active(cfg.get("unlock_all_dlc", False))
+        self.check_unknown_stats.set_active(cfg.get("allow_unknown_stats", False))
+        self.check_unknown_ach.set_active(cfg.get("allow_unknown_achievements", False))
+        self.check_leaderboards.set_active(cfg.get("auto_create_leaderboards", True))
+        self.check_overlay_exp.set_active(cfg.get("overlay_experimental", False))
+        self.check_overlay_ach.set_active(cfg.get("overlay_achievements", True))
+        self.check_overlay_ach_progress.set_active(cfg.get("overlay_achievement_progress", False))
+        self.check_overlay_friends.set_active(cfg.get("overlay_friends", True))
+        overlay_on = cfg.get("overlay_experimental", False)
+        self.check_overlay_ach.set_sensitive(overlay_on)
+        self.check_overlay_ach_progress.set_sensitive(overlay_on)
+        self.check_overlay_friends.set_sensitive(overlay_on)
+
+    def _on_overlay_exp_toggled(self, widget):
+        active = widget.get_active()
+        self.check_overlay_ach.set_sensitive(active)
+        self.check_overlay_ach_progress.set_sensitive(active)
+        self.check_overlay_friends.set_sensitive(active)
+
+    def _on_browse_dll(self, widget):
+        filechooser = new_file_chooser(
+            self,
+            _("Select the Steam API DLL"),
+            Gtk.FileChooserAction.OPEN,
+        )
+        filter_dll = Gtk.FileFilter()
+        filter_dll.set_name(_("Steam API DLL"))
+        filter_dll.add_pattern("steam_api64.dll")
+        filter_dll.add_pattern("steam_api.dll")
+        filechooser.add_filter(filter_dll)
+        filechooser.set_filter(filter_dll)
+
+        def on_response(dialog_fc, response):
+            if response == Gtk.ResponseType.ACCEPT:
+                selected = dialog_fc.get_file().get_path()
+                if selected:
+                    self.entry_dll_path.set_text(selected)
+            destroy_and_release(dialog_fc)
+
+        filechooser.connect("response", on_response)
+        filechooser.present()
+
+    def _save_and_respond(self):
+        cfg = {
+            "username": self.entry_username.get_text().strip() or "Player",
+            "persona_name": self.entry_persona.get_text().strip() or "Player",
+            "language": self.combo_language.get_active_text() or "english",
+            "steamid": self.entry_steamid.get_text().strip(),
+            "dll_path": self.entry_dll_path.get_text().strip(),
+            "gse_fork_variant": self.combo_fork.get_active_text() or "gse_fork",
+            "fork_variant": self.combo_variant.get_active_text() or "regular",
+            "offline": self.check_offline.get_active(),
+            "disable_networking": self.check_no_net.get_active(),
+            "unlock_all_dlc": self.check_unlock_dlc.get_active(),
+            "allow_unknown_stats": self.check_unknown_stats.get_active(),
+            "allow_unknown_achievements": self.check_unknown_ach.get_active(),
+            "auto_create_leaderboards": self.check_leaderboards.get_active(),
+            "overlay_experimental": self.check_overlay_exp.get_active(),
+            "overlay_achievements": self.check_overlay_ach.get_active(),
+            "overlay_achievement_progress": self.check_overlay_ach_progress.get_active(),
+            "overlay_friends": self.check_overlay_friends.get_active(),
+            "fetch_achievements": self.check_fetch_ach.get_active(),
+        }
+        gse.write_config(self.gameid, cfg)
+        gse.set_appid(self.gameid, self.appid)
+
+        if cfg["fetch_achievements"] and self.appid:
+            self._run_auto_fetch_and_close()
+        else:
+            self.response(Gtk.ResponseType.OK)
+
+    def _run_auto_fetch_and_close(self):
+        self.btn_ok.set_sensitive(False)
+        self.btn_ok.set_label(_("Fetching…"))
+
+        def do_fetch():
+            ok, msg = gse.fetch_steam_config(
+                self.gameid,
+                twofa_cb=self._prompt_steam_twofa_code,
+                auth_cb=self._prompt_steam_login,
+            )
+            GLib.idle_add(self._auto_fetch_done, ok, msg)
+
+        threading.Thread(target=do_fetch, daemon=True).start()
+
+    def _auto_fetch_done(self, ok, msg):
+        self.btn_ok.set_label(_("Ok"))
+        self.btn_ok.set_sensitive(True)
+        show_message_dialog(
+            msg, parent=self, callback=lambda confirmed: self.response(Gtk.ResponseType.OK)
+        )
+        return False
+
+    def _run_on_ui_thread(self, callback):
+        if threading.current_thread() is threading.main_thread():
+            return callback()
+
+        done = threading.Event()
+        out = {}
+
+        def _invoke():
+            try:
+                out["value"] = callback()
+            finally:
+                done.set()
+            return False
+
+        GLib.idle_add(_invoke)
+        done.wait()
+        return out.get("value")
+
+    def _steam_auth_defaults(self):
+        cfg = ConfigManager().config
+        return {
+            "username": cfg.get("default-gse-username", "").strip('"'),
+            "remember_login": cfg.get("gse-remember-login", "True") == "True",
+            "login_skip_app_confirmation": (
+                cfg.get("gse-login-skip-app-confirmation", "False") == "True"
+            ),
+        }
+
+    def _prompt_steam_login(self):
+        defaults = self._steam_auth_defaults()
+
+        def _show_dialog():
+            dlg = Gtk.Dialog(title=_("Steam Login"), transient_for=self)
+            hide_dialog_action_area(dlg)
+            dlg.set_modal(True)
+            dlg.set_default_size(460, -1)
+
+            area = dlg.get_content_area()
+            area.set_spacing(8)
+            area.set_margin_start(12)
+            area.set_margin_end(12)
+            area.set_margin_top(12)
+            area.set_margin_bottom(12)
+
+            hint = Gtk.Label(
+                label=_(
+                    'Enter "qr" as username to try Steam app QR login. Password can be empty for QR.'
+                )
+            )
+            hint.set_wrap(True)
+            hint.set_halign(Gtk.Align.START)
+
+            user_label = Gtk.Label(label=_("Username"))
+            user_label.set_halign(Gtk.Align.START)
+            user_entry = Gtk.Entry()
+            user_entry.set_text(defaults["username"])
+
+            pass_label = Gtk.Label(label=_("Password"))
+            pass_label.set_halign(Gtk.Align.START)
+            pass_entry = Gtk.Entry()
+            pass_entry.set_visibility(False)
+            pass_entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+
+            remember = Gtk.CheckButton(label=_("Remember login token"))
+            remember.set_active(defaults["remember_login"])
+
+            skip_confirm = Gtk.CheckButton(
+                label=_("Prefer code entry over app confirmation")
+            )
+            skip_confirm.set_active(defaults["login_skip_app_confirmation"])
+
+            area.append(hint)
+            area.append(user_label)
+            area.append(user_entry)
+            area.append(pass_label)
+            area.append(pass_entry)
+            area.append(remember)
+            area.append(skip_confirm)
+            area.append(build_dialog_ok_cancel_box(dlg))
+
+            loop = GLib.MainLoop()
+            state = {}
+
+            def on_response(d, response_id):
+                state["response"] = response_id
+                loop.quit()
+
+            dlg.connect("response", on_response)
+            dlg.present()
+            loop.run()
+
+            if state.get("response") != Gtk.ResponseType.OK:
+                destroy_and_release(dlg)
+                return None
+
+            result = {
+                "username": user_entry.get_text().strip(),
+                "password": pass_entry.get_text(),
+                "remember_login": remember.get_active(),
+                "login_skip_app_confirmation": skip_confirm.get_active(),
+            }
+            destroy_and_release(dlg)
+            cfg = ConfigManager()
+            cfg.set_value("gse-remember-login", result["remember_login"])
+            cfg.set_value(
+                "gse-login-skip-app-confirmation",
+                result["login_skip_app_confirmation"],
+            )
+            cfg.save_config()
+            return result
+
+        return self._run_on_ui_thread(_show_dialog)
+
+    def _prompt_steam_twofa_code(self, prompt):
+        def _show_dialog():
+            dlg = Gtk.Dialog(title=_("Steam Guard"), transient_for=self)
+            hide_dialog_action_area(dlg)
+            dlg.set_modal(True)
+
+            area = dlg.get_content_area()
+            area.set_spacing(8)
+            area.set_margin_start(12)
+            area.set_margin_end(12)
+            area.set_margin_top(12)
+            area.set_margin_bottom(12)
+
+            label = Gtk.Label(label=prompt or _("Enter your Steam Guard code"))
+            label.set_wrap(True)
+            label.set_halign(Gtk.Align.START)
+            code_entry = Gtk.Entry()
+            code_entry.set_placeholder_text(_("2FA code"))
+
+            area.append(label)
+            area.append(code_entry)
+            area.append(build_dialog_ok_cancel_box(dlg))
+
+            loop = GLib.MainLoop()
+            state = {}
+
+            def on_response(d, response_id):
+                state["response"] = response_id
+                loop.quit()
+
+            dlg.connect("response", on_response)
+            dlg.present()
+            loop.run()
+
+            response = state.get("response")
+            code = code_entry.get_text().strip() if response == Gtk.ResponseType.OK else None
+            destroy_and_release(dlg)
+            return code or None
+
+        return self._run_on_ui_thread(_show_dialog)
 
 
 class DuplicateDialog(Gtk.Dialog):
@@ -7010,6 +7686,10 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
 
         self.grid_runtime = build_grid(margin_bottom=False)
 
+        self.grid_steam_app_id = build_grid(margin_bottom=False)
+
+        self.grid_save_path = build_grid(margin_bottom=False)
+
         self.grid_prefix = build_grid(margin_bottom=False)
 
         self.grid_runner = build_grid(margin_bottom=False)
@@ -7200,6 +7880,48 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.button_search_prefix.set_child(Gtk.Image.new_from_icon_name("system-search-symbolic"))
         self.button_search_prefix.connect("clicked", self.on_button_search_prefix_clicked)
         self.button_search_prefix.set_size_request(50, -1)
+
+        self.label_steam_app_id = Gtk.Label(label=_("Steam AppID"))
+        self.label_steam_app_id.set_halign(Gtk.Align.START)
+        self.entry_steam_app_id = Gtk.Entry()
+        self.entry_steam_app_id.connect("changed", on_entry_changed)
+        self.entry_steam_app_id.set_tooltip_text(
+            _("The numeric Steam AppID for this game. Used to look up the save "
+              "location on PCGamingWiki and to configure the Goldberg emulator.")
+        )
+        self.entry_steam_app_id.set_has_tooltip(True)
+        self.entry_steam_app_id.connect("query-tooltip", on_entry_query_tooltip)
+        self.button_search_appid = Gtk.Button(label=_("Search"))
+        self.button_search_appid.set_tooltip_text(
+            _("Search Steam for this game's AppID")
+        )
+        self.button_search_appid.connect("clicked", self._on_search_appid)
+
+        self.label_save_path = Gtk.Label(label=_("Save Path"))
+        self.label_save_path.set_halign(Gtk.Align.START)
+        self.entry_save_path = Gtk.Entry()
+        self.entry_save_path.connect("changed", on_entry_changed)
+        self.entry_save_path.set_tooltip_text(_("/path/to/the/save/data"))
+        self.entry_save_path.set_has_tooltip(True)
+        self.entry_save_path.connect("query-tooltip", on_entry_query_tooltip)
+        self.button_lookup_save_path = Gtk.Button(label=_("Lookup"))
+        self.button_lookup_save_path.set_tooltip_text(
+            _("Try to find the save location on PCGamingWiki using the configured Steam AppID")
+        )
+        self.button_lookup_save_path.connect("clicked", self._on_lookup_save_path)
+        self.button_search_save_path = Gtk.Button()
+        self.button_search_save_path.set_child(Gtk.Image.new_from_icon_name("system-search-symbolic"))
+        self.button_search_save_path.connect("clicked", self.on_button_search_save_path_clicked)
+        self.button_search_save_path.set_size_request(50, -1)
+
+        self.checkbox_goldberg = Gtk.CheckButton(label=_("Goldberg Emulator"))
+        self.checkbox_goldberg.set_tooltip_text(
+            _("Replace steam_api.dll with Goldberg Emulator for offline/LAN play.")
+        )
+        self.button_goldberg = Gtk.Button(label=_("Goldberg Settings"))
+        self.button_goldberg.set_size_request(120, -1)
+        self.button_goldberg.connect("clicked", self.on_button_goldberg_clicked)
+        self.connect("show", self._refresh_goldberg_sensitivity)
 
         self.checkbox_custom_runner = Gtk.CheckButton(label=_("Specific Proton"))
         self.checkbox_custom_runner.connect("toggled", self.on_checkbox_custom_runner_toggled)
@@ -7480,6 +8202,21 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.entry_prefix.set_hexpand(True)
         self.grid_prefix.attach(self.button_search_prefix, 3, 1, 1, 1)
 
+        appid_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.entry_steam_app_id.set_hexpand(True)
+        appid_box.append(self.entry_steam_app_id)
+        appid_box.append(self.button_search_appid)
+        self.grid_steam_app_id.attach(self.label_steam_app_id, 0, 0, 1, 1)
+        self.grid_steam_app_id.attach(appid_box, 1, 0, 3, 1)
+
+        self.grid_save_path.attach(self.label_save_path, 0, 0, 1, 1)
+        save_path_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.entry_save_path.set_hexpand(True)
+        save_path_box.append(self.entry_save_path)
+        save_path_box.append(self.button_lookup_save_path)
+        save_path_box.append(self.button_search_save_path)
+        self.grid_save_path.attach(save_path_box, 0, 1, 4, 1)
+
         self.grid_runner.attach(self.checkbox_custom_runner, 0, 0, 1, 1)
         self.grid_runner.attach(self.combobox_runner, 0, 1, 1, 1)
         self.combobox_runner.set_hexpand(True)
@@ -7503,6 +8240,8 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         page1.append(self.grid_path)
         page1.append(self.grid_runtime)
         page1.append(self.grid_prefix)
+        page1.append(self.grid_steam_app_id)
+        page1.append(self.grid_save_path)
         page1.append(self.grid_runner)
         page1.append(self.label_shortcut)
         page1.append(self.grid_shortcut)
@@ -7552,6 +8291,9 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.checkbox_no_sleep.set_hexpand(True)
         self.grid_tools.attach(self.checkbox_sdl, 0, 3, 1, 1)
         self.checkbox_sdl.set_hexpand(True)
+        self.grid_tools.attach(self.checkbox_goldberg, 0, 4, 1, 1)
+        self.checkbox_goldberg.set_hexpand(True)
+        self.grid_tools.attach(self.button_goldberg, 2, 4, 1, 1)
         self.grid_tools.attach(box_buttons, 2, 0, 1, 4)
 
         page2.append(self.grid_protonfix)
@@ -8624,6 +9366,231 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
 
         filechooser.connect("response", on_response)
         filechooser.present()
+
+    def _on_search_appid(self, widget):
+        query = self.entry_title.get_text().strip()
+        if not query:
+            show_message_dialog(_("Please enter a game title first."), parent=self)
+            return
+
+        self.button_search_appid.set_sensitive(False)
+        self.button_search_appid.set_label(_("Searching\u2026"))
+
+        def do_search():
+            try:
+                import requests
+
+                url = "https://store.steampowered.com/api/storesearch/"
+                r = requests.get(
+                    url, params={"term": query, "l": "english", "cc": "US"}, timeout=10
+                )
+                if r.status_code != 200:
+                    GLib.idle_add(self._search_done, [], query)
+                    return
+                items = [
+                    (str(item["id"]), item["name"])
+                    for item in r.json().get("items", [])
+                    if item.get("type") == "app"
+                ]
+                GLib.idle_add(self._search_done, items, query)
+            except Exception:
+                GLib.idle_add(self._search_done, [], query)
+
+        threading.Thread(target=do_search, daemon=True).start()
+
+    def _search_done(self, results, query):
+        self.button_search_appid.set_label(_("Search"))
+        self.button_search_appid.set_sensitive(True)
+
+        if not results:
+            show_message_dialog(
+                _('No Steam results found for "%s".') % query, parent=self
+            )
+            return False
+
+        if len(results) == 1:
+            self.entry_steam_app_id.set_text(results[0][0])
+            return False
+
+        picker = Gtk.Dialog(title=_("Select Game"), transient_for=self)
+        apply_titlebar_preference(picker)
+        hide_dialog_action_area(picker)
+        picker.set_modal(True)
+        picker.set_default_size(380, 300)
+
+        content_area = picker.get_content_area()
+        content_area.set_vexpand(True)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_vexpand(True)
+
+        listbox = Gtk.ListBox()
+        for appid, name in results:
+            row = Gtk.ListBoxRow()
+            lbl = Gtk.Label(label=name, xalign=0)
+            lbl.set_margin_start(10)
+            lbl.set_margin_top(6)
+            lbl.set_margin_bottom(6)
+            row.set_child(lbl)
+            row.appid = appid
+            listbox.append(row)
+        listbox.select_row(listbox.get_row_at_index(0))
+        listbox.connect("row-activated", lambda lb, row: picker.response(Gtk.ResponseType.OK))
+
+        scroll.set_child(listbox)
+        content_area.append(scroll)
+        content_area.append(build_dialog_ok_cancel_box(picker))
+
+        def on_response(dlg, response):
+            if response == Gtk.ResponseType.OK:
+                row = listbox.get_selected_row()
+                if row:
+                    self.entry_steam_app_id.set_text(row.appid)
+            destroy_and_release(dlg)
+
+        picker.connect("response", on_response)
+        picker.present()
+        return False
+
+    def on_button_search_save_path_clicked(self, widget):
+        filechooser = new_file_chooser(
+            self,
+            _("Select the save data location"),
+            Gtk.FileChooserAction.SELECT_FOLDER,
+        )
+
+        preferred = self.entry_save_path.get_text() or self.entry_prefix.get_text()
+        if preferred:
+            filechooser.set_current_folder(Gio.File.new_for_path(expand_path(preferred)))
+
+        def on_response(dialog_fc, response):
+            if response == Gtk.ResponseType.ACCEPT:
+                self.entry_save_path.set_text(dialog_fc.get_file().get_path())
+            destroy_and_release(dialog_fc)
+
+        filechooser.connect("response", on_response)
+        filechooser.present()
+
+    def _on_lookup_save_path(self, widget):
+        title = self.entry_title.get_text().strip()
+        if not title:
+            return
+
+        appid = self.entry_steam_app_id.get_text().strip()
+        if not appid:
+            show_message_dialog(
+                _("No Steam AppID set"),
+                _("Enter this game's Steam AppID above, then try the lookup again."),
+                parent=self,
+            )
+            return
+
+        prefix = expand_path(self.entry_prefix.get_text().strip())
+
+        self.button_lookup_save_path.set_sensitive(False)
+        self.button_lookup_save_path.set_label(_("Looking up…"))
+
+        def do_lookup():
+            rel_path, reason = gse.lookup_save_path(appid)
+            GLib.idle_add(self._lookup_save_path_done, rel_path, reason, prefix)
+
+        threading.Thread(target=do_lookup, daemon=True).start()
+
+    def _lookup_save_path_done(self, rel_path, reason, prefix):
+        self.button_lookup_save_path.set_label(_("Lookup"))
+        self.button_lookup_save_path.set_sensitive(True)
+
+        if not rel_path:
+            if reason == "throttled":
+                detail = _(
+                    "PCGamingWiki is rate limiting requests right now. "
+                    "Please wait a moment and try again, or enter the path manually."
+                )
+            elif reason == "no_page":
+                detail = _(
+                    "PCGamingWiki has no page for this game's Steam AppID. "
+                    "Please enter the path manually."
+                )
+            elif reason == "no_section":
+                detail = _(
+                    "The PCGamingWiki page for this game doesn't list a save "
+                    "location. Please enter the path manually."
+                )
+            elif reason == "unsupported_path":
+                detail = _(
+                    "The PCGamingWiki save location uses a path that can't be "
+                    "mapped to a Wine prefix. Please enter the path manually."
+                )
+            else:
+                detail = _(
+                    "PCGamingWiki doesn't have a usable save location for this "
+                    "AppID. Please enter the path manually."
+                )
+            show_message_dialog(
+                _("Couldn't determine the save location"),
+                detail,
+                parent=self,
+            )
+            return False
+
+        full_path = os.path.normpath(os.path.join(prefix, rel_path)) if prefix else rel_path
+        full_path = self._resolve_save_path_uid(full_path)
+        self.entry_save_path.set_text(full_path)
+        return False
+
+    def _resolve_save_path_uid(self, full_path):
+        """Replace the {uid} placeholder with the real per-account folder.
+
+        PCGamingWiki writes some save locations as .../saves/{{p|uid}}, where the
+        component holding the token is an account id (usually the SteamID64).
+        Its value can only be discovered by looking inside the prefix. The token
+        is not always the last component (e.g. ".../SaveGames/{uid}/*.sav"), so
+        the directory preceding it is scanned and the remainder re-appended."""
+        token = gse._PCGW_UID_TOKEN
+        if token not in full_path:
+            return full_path
+
+        head, _, tail = full_path.partition(token)
+        head = head.rstrip("/")
+        tail = tail.lstrip("/")
+        if not head or not os.path.isdir(head):
+            return full_path
+
+        for name in sorted(os.listdir(head)):
+            if name.isdigit():
+                return os.path.join(head, name, tail) if tail else os.path.join(head, name)
+        return full_path
+
+    def _refresh_goldberg_sensitivity(self, *args):
+        installed = gse.is_any_fork_installed()
+        self.checkbox_goldberg.set_sensitive(installed)
+        self.button_goldberg.set_sensitive(installed)
+        if installed:
+            self.checkbox_goldberg.set_tooltip_text(
+                _("Replace steam_api.dll with Goldberg Emulator for offline/LAN play.")
+            )
+        else:
+            self.checkbox_goldberg.set_tooltip_text(
+                _("Goldberg Emulator binaries are downloading, please try again shortly.")
+            )
+
+    def on_button_goldberg_clicked(self, widget):
+        title = self.entry_title.get_text().strip()
+        if not title:
+            show_message_dialog(_("Please enter a game title first."), parent=self)
+            return
+
+        gameid = format_title(title)
+        dialog = GoldbergDialog(
+            self,
+            gameid,
+            game_title=title,
+            prefix=expand_path(self.entry_prefix.get_text()),
+            appid=self.entry_steam_app_id.get_text().strip(),
+        )
+        dialog.connect("response", lambda d, r: destroy_and_release(d))
+
 
     def validate_fields(self, entry):
         title = self.entry_title.get_text()
